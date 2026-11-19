@@ -37,7 +37,8 @@ pub(super) fn rail_placement_is_valid(world: &World, block: &Block, pos: &BlockP
 
 pub(super) fn can_place_rail_at(world: &dyn BlockAccessor, pos: &BlockPos) -> bool {
     let state = world.get_block_state(&pos.down());
-    state.is_side_solid(BlockDirection::Up)
+    // A hopper's top rim provides rigid support even though its top face is not solid.
+    state.is_side_solid(BlockDirection::Up) || Block::from_state_id(state.id) == &Block::HOPPER
 }
 
 pub(super) fn compute_placed_rail_shape(
