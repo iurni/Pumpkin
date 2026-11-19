@@ -1453,15 +1453,15 @@ impl Player {
         let world = self.world();
         world.remove_player(self, true).await;
 
-        let cylindrical = self.watched_section.load();
+        let radial_chunks: Vec<_> = self.watched_section.load().all_chunks_within().collect();
+        // Once the last ticket is released, an unloaded chunk can no longer accept live container data.
+        for &chunk_pos in &radial_chunks {
+            world.save_block_entities(chunk_pos);
+        }
         self.clean_up_chunk_tickets(&world.level);
         if let Ok(mut sender) = self.chunk_sender.lock() {
             sender.reset();
         }
-
-        // Radial chunks are all of the chunks the player is theoretically viewing.
-        // Given enough time, all of these chunks will be in memory.
-        let radial_chunks = cylindrical.all_chunks_within();
 
         debug!(
             "Removing player {}, unwatching {} chunks",
@@ -5777,14 +5777,37 @@ impl Player {
         let keep_inventory = { self.world().level_info.load().game_rules.keep_inventory };
 
         if !keep_inventory {
-            let mut main_inv = self
-                .inventory()
-                .main_inventory
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for item in main_inv.iter_mut() {
-                if !item.is_empty() {
-                    let stack = std::mem::replace(item, ItemStack::EMPTY.clone());
+            let mut drops: Vec<_> = {
+                let mut main_inv = self
+                    .inventory()
+                    .main_inventory
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                main_inv
+                    .iter_mut()
+                    .map(|item| std::mem::replace(item, ItemStack::EMPTY.clone()))
+                    .filter(|stack| !stack.is_empty())
+                    .collect()
+            };
+            let equipment = std::mem::take(
+                &mut self
+                    .inventory()
+                    .entity_equipment
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .equipment,
+            );
+            // The main hand is already the selected main inventory slot.
+            drops.extend(
+                equipment
+                    .into_iter()
+                    .filter(|(slot, stack)| {
+                        !matches!(slot, EquipmentSlot::MainHand(_)) && !stack.is_empty()
+                    })
+                    .map(|(_, stack)| stack),
+            );
+            for stack in drops {
+                if !crate::entity::living::prevents_equipment_drop(&stack) {
                     self.increment_stat(
                         statistics::StatisticCategory::Dropped,
                         stack.item.id as i32,

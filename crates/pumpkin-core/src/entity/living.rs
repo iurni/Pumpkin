@@ -2919,7 +2919,7 @@ impl LivingEntity {
             }
             self.entity.pose.store(EntityPose::Dying);
 
-            if should_drop_loot {
+            if should_drop_loot && dyn_self.get_player().is_none() {
                 self.drop_equipment(looting_level);
             }
             if perished && let Some(mob) = dyn_self.get_mob() {

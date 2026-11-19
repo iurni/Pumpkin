@@ -2,8 +2,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 
 use pumpkin_data::attributes::Attributes;
+use pumpkin_data::biome::Biome;
 use pumpkin_data::entity::EntityType;
 use pumpkin_data::sound::Sound;
+use pumpkin_data::tag::Taggable;
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_util::Difficulty;
 use pumpkin_util::math::boundingbox::EntityDimensions;
@@ -41,6 +43,20 @@ pub struct SlimeEntity {
     entity: Arc<MobEntity>,
     cube: CubeMobData,
     has_split: AtomicBool,
+}
+
+fn surface_slime_spawn_succeeds(
+    biome: &Biome,
+    y: i32,
+    spawn_chance: f32,
+    brightness: u8,
+    spawn_roll: f32,
+    brightness_roll: impl FnOnce() -> u8,
+) -> bool {
+    biome.has_tag(&pumpkin_data::tag::WorldgenBiome::MINECRAFT_ALLOWS_SURFACE_SLIME_SPAWNS)
+        && (51..=69).contains(&y)
+        && spawn_roll < spawn_chance
+        && brightness <= brightness_roll()
 }
 
 impl SlimeEntity {
@@ -172,23 +188,21 @@ impl SlimeEntity {
             return MobEntity::check_mob_spawn_rules(entity_type, world, pos, reason);
         }
 
-        // Swamp/Surface Spawning
-        // TODO: fix
-        // let biome = world.get_biome(pos);
-        // if biome.has_tag(&pumpkin_data::tag::WorldgenBiome::MINECRAFT_ALLOWS_SURFACE_SLIME_SPAWNS)
-        //     && pos.0.y > 50
-        //     && pos.0.y < 70
-        // {
-        //     let time = world.level_time.lock().await.time_of_day;
-        //     let moon_phase = (time / 24000) % 8;
-        //     let surface_slime_spawn_chance = Self::get_spawn_chance(moon_phase);
-        //     let mut rng = rand::rng();
-        //     if rng.random::<f32>() < surface_slime_spawn_chance
-        //         && world.get_max_local_raw_brightness(pos) <= rng.random_range(0..8)
-        //     {
-        //         return true;
-        //     }
-        // }
+        let mut rng = rand::rng();
+        let biome = world.get_biome(pos);
+        if biome.has_tag(&pumpkin_data::tag::WorldgenBiome::MINECRAFT_ALLOWS_SURFACE_SLIME_SPAWNS)
+            && (51..=69).contains(&pos.0.y)
+            && surface_slime_spawn_succeeds(
+                biome,
+                pos.0.y,
+                world.surface_slime_spawn_chance(pos),
+                world.get_max_local_raw_brightness(pos),
+                rng.random(),
+                || rng.random_range(0..8),
+            )
+        {
+            return MobEntity::check_mob_spawn_rules(entity_type, world, pos, reason);
+        }
 
         // Slime Chunk Spawning
         let chunk_pos = pos.chunk_position();
@@ -201,23 +215,12 @@ impl SlimeEntity {
         );
         let mut slime_rand = pumpkin_util::random::legacy_rand::LegacyRand::from_seed(slime_seed);
 
-        let mut rng = rand::rng();
         if rng.random_range(0..10) == 0 && slime_rand.next_bounded_i32(10) == 0 && pos.0.y < 40 {
             return MobEntity::check_mob_spawn_rules(entity_type, world, pos, reason);
         }
 
         false
     }
-
-    // const fn get_spawn_chance(moon_phase: i64) -> f32 {
-    //     match moon_phase {
-    //         0 => 1.0,
-    //         1 | 7 => 0.75,
-    //         2 | 6 => 0.5,
-    //         3 | 5 => 0.25,
-    //         _ => 0.0,
-    //     }
-    // }
 }
 
 impl CubeMob for SlimeEntity {
@@ -434,6 +437,82 @@ impl Goal for SlimeAttackGoal {
 mod tests {
     use super::*;
     use crate::entity::ai::test_support::world;
+
+    #[test]
+    fn surface_slime_spawn_rules_cover_biomes_height_light_and_moon_roll() {
+        assert!(surface_slime_spawn_succeeds(
+            &Biome::SWAMP,
+            51,
+            0.5,
+            0,
+            0.49,
+            || 0
+        ));
+        assert!(surface_slime_spawn_succeeds(
+            &Biome::MANGROVE_SWAMP,
+            69,
+            0.5,
+            7,
+            0.49,
+            || 7
+        ));
+        assert!(!surface_slime_spawn_succeeds(
+            &Biome::SWAMP,
+            50,
+            0.5,
+            0,
+            0.0,
+            || 0
+        ));
+        assert!(!surface_slime_spawn_succeeds(
+            &Biome::SWAMP,
+            70,
+            0.5,
+            0,
+            0.0,
+            || 0
+        ));
+        assert!(!surface_slime_spawn_succeeds(
+            &Biome::PLAINS,
+            60,
+            0.5,
+            0,
+            0.0,
+            || 0
+        ));
+        assert!(!surface_slime_spawn_succeeds(
+            &Biome::SWAMP,
+            60,
+            0.5,
+            0,
+            0.5,
+            || 0
+        ));
+        assert!(!surface_slime_spawn_succeeds(
+            &Biome::SWAMP,
+            60,
+            0.5,
+            8,
+            0.0,
+            || 7
+        ));
+        assert!(!surface_slime_spawn_succeeds(
+            &Biome::SWAMP,
+            60,
+            0.0,
+            0,
+            0.0,
+            || 0
+        ));
+        assert!(!surface_slime_spawn_succeeds(
+            &Biome::SWAMP,
+            60,
+            0.0,
+            0,
+            0.0,
+            || { panic!("brightness roll must not be consumed when the chance roll fails") }
+        ));
+    }
 
     #[tokio::test]
     async fn zero_speed_requests_are_consumed_as_movement_operations()

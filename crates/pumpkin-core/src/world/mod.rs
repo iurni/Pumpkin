@@ -203,6 +203,7 @@ use weather::Weather;
 
 const MAX_LIGHT_LEVEL: u8 = 15;
 const LIGHTNING_ROD_SEARCH_RADIUS: i32 = 128;
+const MAX_STONECUTTER_SENDS: usize = 3;
 pub const MOON_BRIGHTNESS_PER_PHASE: [f32; 8] = [1.0, 0.75, 0.5, 0.25, 0.0, 0.25, 0.5, 0.75];
 
 fn bedrock_chest_block_actor(state_id: BlockStateId, position: BlockPos) -> Option<NbtCompound> {
@@ -728,7 +729,7 @@ impl World {
     /// `get_block_entity` takes the saved NBT out of the chunk when it wakes an
     /// entity up - so this has to run before the chunk is dropped, or everything
     /// the entity did since it was loaded is lost.
-    fn save_block_entities(&self, chunk_pos: Vector2<i32>) {
+    pub(crate) fn save_block_entities(&self, chunk_pos: Vector2<i32>) {
         let Some(block_entities) = self
             .block_entities
             .get(&chunk_pos)
@@ -4159,17 +4160,29 @@ impl World {
             .send_current_equipment_attribute_modifiers();
 
         if let crate::net::ClientPlatform::Java(java_client) = player.client.as_ref()
-            && server.advanced_config.recipe.send_recipes
             && java_client.version.load() >= JavaMinecraftVersion::V_1_21_2
         {
-            let settings_packet = CRecipeBookSettings::default_closed();
-            if let Ok(data) = java_client.serialize_packet(&settings_packet) {
-                java_client.send_packet_now(data).await;
+            if server.advanced_config.recipe.send_recipes {
+                let settings_packet = CRecipeBookSettings::default_closed();
+                if let Ok(data) = java_client.serialize_packet(&settings_packet) {
+                    java_client.send_packet_now(data).await;
+                }
+                let dynamic_recipes = server.recipe_manager.get_dynamic_recipes();
+                let add_packet = CRecipeBookAdd::new(true, &dynamic_recipes);
+                if let Ok(data) = java_client.serialize_packet(&add_packet) {
+                    java_client.send_packet_now(data).await;
+                }
             }
-            let dynamic_recipes = server.recipe_manager.get_dynamic_recipes();
-            let add_packet = CRecipeBookAdd::new(true, &dynamic_recipes);
-            if let Ok(data) = java_client.serialize_packet(&add_packet) {
-                java_client.send_packet_now(data).await;
+            // A reload during the sends must not leave the client with an older recipe list.
+            for _ in 0..MAX_STONECUTTER_SENDS {
+                let generation = server.recipe_manager.generation();
+                let dynamic_recipes = server.recipe_manager.get_dynamic_recipes();
+                if let Some(data) = java_client.stonecutter_recipes_packet(&dynamic_recipes) {
+                    java_client.send_packet_now(data).await;
+                }
+                if generation == server.recipe_manager.generation() {
+                    break;
+                }
             }
         }
         let msg_comp = TextComponent::translate_cross(

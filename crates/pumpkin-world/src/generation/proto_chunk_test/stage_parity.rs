@@ -750,3 +750,164 @@ fn end_stage_parity_hashes() {
         include_json!("../../../../../assets/tests/end_stage_hashes.json");
     verify_stage_parity(0, &stages);
 }
+
+#[test]
+fn surface_builder_preserves_tree_features_across_border() {
+    let seed = Seed(0);
+    let world_gen = get_world_gen(seed, Dimension::OVERWORLD, false, Vec::new(), String::new());
+    let WorldGenerator::Noise(generator) = &*world_gen else {
+        unreachable!()
+    };
+
+    let mut chunk = ProtoChunk::new(0, 0, &world_gen);
+    chunk.step_to_biomes(generator);
+    chunk.set_structure_starts(generator);
+    chunk.set_structure_references(generator);
+    chunk.step_to_noise(generator);
+    // Simulate an adjacent chunk placing a tree that crosses into (x=15, z=15)
+    let test_x = 15;
+    let test_z = 15;
+    let ground_y = chunk.top_block_height_exclusive(test_x, test_z);
+    let log_y = ground_y + 2;
+    let leaf_y = ground_y + 3;
+
+    chunk.set_block_state(
+        test_x,
+        log_y,
+        test_z,
+        pumpkin_data::Block::OAK_LOG.default_state,
+    );
+    chunk.set_block_state(
+        test_x,
+        leaf_y,
+        test_z,
+        pumpkin_data::Block::OAK_LEAVES.default_state,
+    );
+
+    // Run build_surface
+    let center_surface_biomes = surface_biomes(&world_gen, 0, 0);
+    chunk.step_to_surface(generator, &center_surface_biomes);
+
+    // Assert that oak leaves and log were NOT overwritten with grass or dirt
+    let state_leaf = chunk
+        .get_block_state(&pumpkin_util::math::vector3::Vector3::new(
+            test_x, leaf_y, test_z,
+        ))
+        .to_state();
+    let state_log = chunk
+        .get_block_state(&pumpkin_util::math::vector3::Vector3::new(
+            test_x, log_y, test_z,
+        ))
+        .to_state();
+
+    assert_eq!(
+        state_leaf.id,
+        pumpkin_data::Block::OAK_LEAVES.default_state.id,
+        "Surface builder must not replace tree canopy with grass!"
+    );
+    assert_eq!(
+        state_log.id,
+        pumpkin_data::Block::OAK_LOG.default_state.id,
+        "Surface builder must not replace tree trunk with dirt!"
+    );
+}
+
+/// A Surface-stage chunk is stored as Terrain and resumes at Noise. Re-running
+/// surface rules on the already surfaced blocks must not create buried topsoil.
+#[test]
+fn surface_resume_does_not_create_buried_topsoil() {
+    use crate::chunk::{
+        ChunkData,
+        format::anvil::{AnvilRegion, SingleChunkDataSerializer},
+        io::RegionFile,
+    };
+    use crate::chunk_system::chunk_state::{Chunk, StagedChunkEnum};
+    use pumpkin_config::lighting::LightingEngineConfig;
+    use pumpkin_data::{Block, chunk::ChunkStatus};
+    use pumpkin_util::math::{vector2::Vector2, vector3::Vector3};
+
+    let seed = Seed(1_779_920_288_596_261_407);
+    let (cx, cz) = (67, 63);
+    let world_gen = get_world_gen(seed, Dimension::OVERWORLD, false, Vec::new(), String::new());
+    let WorldGenerator::Noise(generator) = &*world_gen else {
+        unreachable!()
+    };
+    let surface_biomes = surface_biomes(&world_gen, cx, cz);
+    let mut original = ProtoChunk::new(cx, cz, &world_gen);
+    original.step_to_biomes(generator);
+    original.set_structure_starts(generator);
+    original.set_structure_references(generator);
+    original.step_to_noise(generator);
+    original.step_to_surface(generator, &surface_biomes);
+    assert_eq!(original.stage, StagedChunkEnum::Surface);
+
+    // Snapshot the entire chunk, not just the highest non-air block. Repeated
+    // surface work can leave the visible surface intact while replacing stone
+    // underneath the pre-existing grass/dirt layer.
+    let bottom = i32::from(original.bottom_y());
+    let top = bottom + i32::from(original.height());
+    let snapshot = |chunk: &ProtoChunk| {
+        let mut blocks = Vec::new();
+        for z in 0..16 {
+            for x in 0..16 {
+                for y in bottom..top {
+                    blocks.push(chunk.get_block_state(&Vector3::new(x, y, z)));
+                }
+            }
+        }
+        blocks
+    };
+    let before = snapshot(&original);
+    assert!(
+        before.iter().any(|state| matches!(
+            state.to_block_id(),
+            id if id == Block::GRASS_BLOCK.id || id == Block::DIRT.id
+        )),
+        "the sampled chunk must contain grass or dirt for this regression"
+    );
+
+    // Use the real save/load conversion and Anvil NBT payload rather than just
+    // overwriting the in-memory stage. No region file or external world is used.
+    let mut staged = Chunk::Proto(Box::new(original));
+    staged.upgrade_to_level_chunk(&Dimension::OVERWORLD, &LightingEngineConfig::Default);
+    let Chunk::Level(chunk_data) = staged else {
+        unreachable!()
+    };
+    assert_eq!(chunk_data.status, ChunkStatus::Terrain);
+    let bytes = AnvilRegion::serialize_chunk(chunk_data.as_ref()).unwrap();
+    let loaded = ChunkData::from_bytes(&bytes, Vector2::new(cx, cz)).unwrap();
+    assert_eq!(loaded.status, ChunkStatus::Terrain);
+    let mut resumed = ProtoChunk::from_chunk_data(&loaded, &world_gen);
+    assert_eq!(resumed.stage, StagedChunkEnum::Noise);
+    assert_eq!(
+        snapshot(&resumed),
+        before,
+        "save/load changed chunk blocks before surface was rerun"
+    );
+
+    resumed.step_to_surface(generator, &surface_biomes);
+    let after = snapshot(&resumed);
+    let added_topsoil = before
+        .iter()
+        .zip(after.iter())
+        .filter(|(old, new)| {
+            let old = old.to_block_id();
+            let new = new.to_block_id();
+            (old == Block::STONE.id || old == Block::DEEPSLATE.id)
+                && (new == Block::GRASS_BLOCK.id || new == Block::DIRT.id)
+        })
+        .count();
+    assert_eq!(
+        added_topsoil, 0,
+        "resuming and rebuilding Surface replaced {added_topsoil} original terrain blocks with additional grass/dirt"
+    );
+    let changed_blocks = before
+        .iter()
+        .zip(after.iter())
+        .filter(|(old, new)| old != new)
+        .count();
+    assert_eq!(
+        changed_blocks, 0,
+        "resuming Surface changed {changed_blocks} persisted block states"
+    );
+}

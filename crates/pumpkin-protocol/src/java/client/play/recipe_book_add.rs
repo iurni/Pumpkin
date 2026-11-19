@@ -2,8 +2,8 @@ use pumpkin_data::item::Item;
 use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::packet::clientbound::play::RECIPE_BOOK_ADD;
 use pumpkin_data::recipes::{
-    CookingRecipeType, CraftingRecipeTypes, RECIPES_COOKING, RECIPES_CRAFTING, RecipeCategoryTypes,
-    RecipeIngredientTypes, RecipeResultStruct,
+    CookingRecipeType, CraftingRecipeTypes, RECIPES_COOKING, RECIPES_CRAFTING,
+    RECIPES_STONECUTTING, RecipeCategoryTypes, RecipeIngredientTypes, RecipeResultStruct,
 };
 use pumpkin_macros::java_packet;
 use pumpkin_util::version::JavaMinecraftVersion;
@@ -954,6 +954,43 @@ fn write_dynamic_cooking_entry(
     Ok(())
 }
 
+/// Builds the item property sets and stonecutter list of `UPDATE_RECIPES`.
+///
+/// The built-in-then-dynamic order must match the server's filtered stonecutter choices.
+pub fn stonecutter_update_recipes_data(
+    dynamic_recipes: &[DynamicRecipe],
+    version: JavaMinecraftVersion,
+) -> Result<Vec<u8>, WritingError> {
+    let mut write = Vec::new();
+    // Other item property sets are not populated by Pumpkin yet.
+    write.write_var_int(&VarInt(0))?;
+    let dynamic: Vec<_> = dynamic_recipes
+        .iter()
+        .filter_map(|recipe| match recipe {
+            DynamicRecipe::Stonecutting(recipe)
+                if !matches!(
+                    &recipe.ingredient,
+                    crate::codec::recipe::OwnedRecipeIngredient::Tagged(tag)
+                        if resolve_item_tag(tag, version).is_none()
+                ) =>
+            {
+                Some(recipe)
+            }
+            _ => None,
+        })
+        .collect();
+    write.write_var_int(&VarInt((RECIPES_STONECUTTING.len() + dynamic.len()) as i32))?;
+    for recipe in RECIPES_STONECUTTING {
+        write_ingredient_holderset(&mut write, &recipe.ingredient, version)?;
+        write_result_slot_display(&mut write, &recipe.result, version)?;
+    }
+    for recipe in dynamic {
+        write_dynamic_ingredient_holderset(&mut write, &recipe.ingredient, version)?;
+        write_dynamic_result_slot_display(&mut write, &recipe.result, version)?;
+    }
+    Ok(write)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -978,5 +1015,82 @@ mod tests {
         for version in [JavaMinecraftVersion::V_1_21_2, JavaMinecraftVersion::V_26_3] {
             packet.write_packet_data(Vec::new(), &version).unwrap();
         }
+    }
+
+    #[test]
+    fn stonecutter_recipes_list_dynamic_entries_after_vanilla_ones_in_order() {
+        use crate::codec::recipe::{
+            OwnedRecipeIngredient, OwnedRecipeResult, OwnedStonecutterRecipe,
+        };
+
+        let recipe = |ingredient: &str, result: &str, count: u8| {
+            DynamicRecipe::Stonecutting(OwnedStonecutterRecipe {
+                recipe_id: format!("test:{result}"),
+                group: None,
+                ingredient: OwnedRecipeIngredient::Simple(ingredient.to_string()),
+                result: OwnedRecipeResult {
+                    item_id: result.to_string(),
+                    count,
+                },
+            })
+        };
+        let recipes = [
+            recipe("minecraft:stone", "minecraft:stone_slab", 2),
+            recipe("dirt", "minecraft:stone", 3),
+        ];
+        let var = |value: i32| {
+            let mut bytes = Vec::new();
+            VarInt(value).encode(&mut bytes).unwrap();
+            bytes
+        };
+        // Vanilla 26.3: direct ingredient, item_stack display, item id, count, component patch.
+        let entry = |ingredient: &Item, result: &Item, count: i32| {
+            [
+                var(2),
+                var(ingredient.id as i32),
+                var(5),
+                var(result.id as i32),
+                var(count),
+                var(0),
+                var(0),
+            ]
+            .concat()
+        };
+        let expected = [
+            entry(&Item::STONE, &Item::STONE_SLAB, 2),
+            entry(&Item::DIRT, &Item::STONE, 3),
+        ]
+        .concat();
+
+        let version = JavaMinecraftVersion::V_26_3;
+        let data = stonecutter_update_recipes_data(&recipes, version).unwrap();
+        let vanilla = stonecutter_update_recipes_data(&[], version).unwrap();
+        let mut count_prefix = vec![0u8];
+        count_prefix.extend(var(RECIPES_STONECUTTING.len() as i32 + 2));
+        assert!(data.starts_with(&count_prefix));
+        assert!(data.ends_with(&expected));
+        assert_eq!(data.len() - expected.len(), vanilla.len());
+    }
+
+    #[test]
+    fn stonecutter_recipes_skip_tags_the_server_cannot_resolve() {
+        use crate::codec::recipe::{
+            OwnedRecipeIngredient, OwnedRecipeResult, OwnedStonecutterRecipe,
+        };
+
+        let recipe = DynamicRecipe::Stonecutting(OwnedStonecutterRecipe {
+            recipe_id: "test:unknown_tag".to_string(),
+            group: None,
+            ingredient: OwnedRecipeIngredient::Tagged("test:does_not_exist".to_string()),
+            result: OwnedRecipeResult {
+                item_id: "minecraft:stone".to_string(),
+                count: 1,
+            },
+        });
+        let version = JavaMinecraftVersion::V_26_3;
+        assert_eq!(
+            stonecutter_update_recipes_data(std::slice::from_ref(&recipe), version).unwrap(),
+            stonecutter_update_recipes_data(&[], version).unwrap(),
+        );
     }
 }

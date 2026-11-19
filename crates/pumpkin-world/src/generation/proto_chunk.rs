@@ -1319,13 +1319,13 @@ impl ProtoChunk {
                 let mut fluid_height = i32::MIN;
                 for y in (min_y as i32..=top_block).rev() {
                     let pos = Vector3::new(x, y, z);
-                    let state_id = self.get_block_state(&pos);
-                    if state_id == BlockStateId::AIR {
+                    let raw_state = self.get_block_state(&pos);
+                    if raw_state == BlockStateId::AIR {
                         stone_depth_above = 0;
                         fluid_height = i32::MIN;
                         continue;
                     }
-                    let state = state_id.to_state();
+                    let state = raw_state.to_state();
                     if state.is_air() {
                         stone_depth_above = 0;
                         fluid_height = i32::MIN;
@@ -1364,6 +1364,14 @@ impl ProtoChunk {
                     stone_depth_above += 1;
                     let stone_depth_below = y - min + 1;
                     context.init_vertical(stone_depth_above, stone_depth_below, y, fluid_height);
+
+                    // Previously surfaced soil must still count toward ground depth
+                    // when a partial chunk resumes. Only skip replacing non-base blocks.
+                    let is_base_terrain = state.id == settings.default_block.id
+                        || raw_state.to_block_id() == Block::DEEPSLATE;
+                    if !is_base_terrain {
+                        continue;
+                    }
 
                     let new_state = try_apply_material_rule(
                         generator.surface_rule,

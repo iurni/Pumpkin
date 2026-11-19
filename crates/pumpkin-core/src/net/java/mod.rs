@@ -1,4 +1,8 @@
-use pumpkin_protocol::java::client::play::{CChunkBatchEnd, CChunkBatchStart, CPlayDisconnect};
+use pumpkin_protocol::codec::recipe::DynamicRecipe;
+use pumpkin_protocol::java::client::play::{
+    CChunkBatchEnd, CChunkBatchStart, CPlayDisconnect, CUpdateRecipes,
+    stonecutter_update_recipes_data,
+};
 use pumpkin_world::level::SyncChunk;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
@@ -756,6 +760,16 @@ impl JavaClient {
 
     pub fn serialize_packet<P: ClientPacket>(&self, packet: &P) -> Result<Bytes, WritingError> {
         Self::serialize_packet_for_version(packet, CURRENT_MC_VERSION)
+    }
+
+    /// Builds the stonecutter list sent on join and after a datapack reload.
+    pub fn stonecutter_recipes_packet(&self, dynamic_recipes: &[DynamicRecipe]) -> Option<Bytes> {
+        let version = self.version.load();
+        if version < JavaMinecraftVersion::V_1_21_2 {
+            return None;
+        }
+        let recipes = stonecutter_update_recipes_data(dynamic_recipes, version).ok()?;
+        self.serialize_packet(&CUpdateRecipes::new(&recipes)).ok()
     }
 
     /// `false` when the packet was dropped instead (cancelled, closed, buffer full).
