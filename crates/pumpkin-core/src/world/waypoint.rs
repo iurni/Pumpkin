@@ -110,21 +110,23 @@ impl Connection {
     }
 
     fn is_broken(&self, source: &Player, receiver: &Player) -> bool {
+        if does_source_ignore_receiver(source, receiver) {
+            return true;
+        }
+        // Moving only the receiver can also cross the azimuth distance threshold.
+        let really_far = is_really_far(source, receiver);
         let entity = source.get_entity();
         match *self {
             Self::Block { last_position } => {
-                last_position.manhattan_distance(entity.block_pos.load()) > 1
-                    || does_source_ignore_receiver(source, receiver)
+                really_far || last_position.manhattan_distance(entity.block_pos.load()) > 1
             }
             Self::Chunk { last_position } => {
-                chessboard_distance(last_position, entity.chunk_pos.load()) > 1
-                    || does_source_ignore_receiver(source, receiver)
+                really_far
+                    || chessboard_distance(last_position, entity.chunk_pos.load()) > 1
                     || is_chunk_visible(last_position, receiver)
             }
             Self::Azimuth { .. } => {
-                does_source_ignore_receiver(source, receiver)
-                    || is_chunk_visible(entity.chunk_pos.load(), receiver)
-                    || !is_really_far(source, receiver)
+                !really_far || is_chunk_visible(entity.chunk_pos.load(), receiver)
             }
         }
     }
