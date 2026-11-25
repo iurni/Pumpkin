@@ -1,6 +1,51 @@
 use super::*;
 
 #[test]
+fn fishing_treasure_produces_enchanted_books() {
+    use pumpkin_data::data_component_impl::StoredEnchantmentsImpl;
+    use pumpkin_data::tag::Enchantment as EnchantmentTag;
+
+    let key = "gameplay/fishing/treasure";
+    let static_table = get_loot_table(key).unwrap();
+    let dynamic = parse_loot_table(include_str!(
+        "../../../../../assets/datapack/data/minecraft/loot_table/gameplay/fishing/treasure.json"
+    ))
+    .unwrap();
+    let mut books = 0;
+    for seed in 0..64 {
+        let generated = static_table.generate_loot(seed);
+        let parsed = generate_dynamic_loot(&dynamic, seed);
+        assert_eq!(generated.len(), 1);
+        assert_eq!(parsed.len(), 1);
+        let (generated, parsed) = (&generated[0], &parsed[0]);
+        assert_eq!(generated.item, parsed.item, "seed {seed}");
+        assert_ne!(generated.item, &Item::BOOK, "seed {seed}");
+        if generated.item != &Item::ENCHANTED_BOOK {
+            continue;
+        }
+        books += 1;
+        let stored = generated
+            .get_data_component::<StoredEnchantmentsImpl>()
+            .unwrap();
+        let parsed = parsed
+            .get_data_component::<StoredEnchantmentsImpl>()
+            .unwrap();
+        assert!(stored.enchantment == parsed.enchantment, "seed {seed}");
+        assert!(!stored.enchantment.is_empty(), "seed {seed}");
+        for (index, (enchantment, level)) in stored.enchantment.iter().enumerate() {
+            assert!(enchantment.has_tag(&EnchantmentTag::MINECRAFT_ON_RANDOM_LOOT));
+            assert!((1..=enchantment.max_level).contains(level));
+            assert!(
+                stored.enchantment[..index]
+                    .iter()
+                    .all(|(other, _)| { enchantment.are_compatible(other) })
+            );
+        }
+    }
+    assert!(books > 0, "the sampled seeds must exercise the book entry");
+}
+
+#[test]
 fn alternatives_use_the_first_matching_child() {
     let table = crate::data::datapack::loot_table_loader::parse_loot_table(
             r#"{"pools":[{"rolls":4,"entries":[{"type":"minecraft:alternatives","children":[{"type":"minecraft:item","name":"minecraft:stone"},{"type":"minecraft:item","name":"minecraft:diamond"}]}]}]}"#,

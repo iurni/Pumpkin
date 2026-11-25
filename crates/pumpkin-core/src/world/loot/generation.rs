@@ -618,6 +618,26 @@ impl Generator<'_, '_> {
                         stack.item = item;
                         stack.count = count;
                     }
+                    LootFunctionKind::EnchantWithLevels { levels, options } => {
+                        if stack.count <= 0 {
+                            continue;
+                        }
+                        let level = self.number_int(levels);
+                        let mut template = ItemStack::new(1, stack.item);
+                        template.patch = std::mem::take(&mut stack.patch);
+                        super::enchantments::enchant_with_levels(
+                            &mut template,
+                            level,
+                            options.as_deref(),
+                            self.params.world,
+                            &mut self.rng,
+                        );
+                        if stack.item != template.item {
+                            stack.item = template.item;
+                            stack.count = i32::from(template.item_count);
+                        }
+                        stack.patch = template.patch;
+                    }
                     LootFunctionKind::SetStewEffect(effects) => {
                         if stack.item != &Item::SUSPICIOUS_STEW || effects.is_empty() {
                             continue;

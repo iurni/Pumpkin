@@ -14,6 +14,7 @@ pub use pumpkin_util::loot_table::{
 };
 use pumpkin_util::random::{RandomImpl, xoroshiro128::Xoroshiro};
 
+mod enchantments;
 mod generation;
 mod predicates;
 

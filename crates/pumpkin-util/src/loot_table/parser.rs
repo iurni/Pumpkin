@@ -555,6 +555,21 @@ impl<R: Fn(&str) -> Option<Value>> Parser<'_, R> {
                     "set_stew_effect" => {
                         LootFunctionKind::SetStewEffect(stew_effects(function)?.into())
                     }
+                    "enchant_with_levels" => LootFunctionKind::EnchantWithLevels {
+                        levels: provider(function.get("levels")?)?,
+                        options: match function.get("options") {
+                            Some(options) => Some(
+                                many(options)
+                                    .iter()
+                                    .map(|option| {
+                                        option.as_str().map(|name| name.to_owned().into())
+                                    })
+                                    .collect::<Option<Vec<_>>>()?
+                                    .into(),
+                            ),
+                            None => None,
+                        },
+                    },
                     _ => return None,
                 };
                 let enchantment = function

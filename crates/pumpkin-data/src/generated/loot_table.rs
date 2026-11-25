@@ -43610,14 +43610,29 @@ pub static CHESTS_ANCIENT_CITY: LootTable = LootTable {
                     weight: 2i32,
                     quality: 0i32,
                     condition: LootCondition::None,
-                    functions: &[LootFunction {
-                        kind: LootFunctionKind::SetCount {
-                            count: LootNumberProvider::Constant(1f64),
-                            add: false,
+                    functions: &[
+                        LootFunction {
+                            kind: LootFunctionKind::SetCount {
+                                count: LootNumberProvider::Constant(1f64),
+                                add: false,
+                            },
+                            enchantment: None,
+                            condition: LootCondition::None,
                         },
-                        enchantment: None,
-                        condition: LootCondition::None,
-                    }],
+                        LootFunction {
+                            kind: LootFunctionKind::EnchantWithLevels {
+                                levels: LootNumberProvider::Uniform {
+                                    min: 30f64,
+                                    max: 50f64,
+                                },
+                                options: Some(std::borrow::Cow::Borrowed(&[
+                                    std::borrow::Cow::Borrowed("#minecraft:on_random_loot"),
+                                ])),
+                            },
+                            enchantment: None,
+                            condition: LootCondition::None,
+                        },
+                    ],
                 },
                 LootEntry {
                     kind: LootEntryKind::Item("minecraft:lead"),
@@ -43683,7 +43698,19 @@ pub static CHESTS_ANCIENT_CITY: LootTable = LootTable {
                     weight: 2i32,
                     quality: 0i32,
                     condition: LootCondition::None,
-                    functions: &[],
+                    functions: &[LootFunction {
+                        kind: LootFunctionKind::EnchantWithLevels {
+                            levels: LootNumberProvider::Uniform {
+                                min: 30f64,
+                                max: 50f64,
+                            },
+                            options: Some(std::borrow::Cow::Borrowed(&[
+                                std::borrow::Cow::Borrowed("#minecraft:on_random_loot"),
+                            ])),
+                        },
+                        enchantment: None,
+                        condition: LootCondition::None,
+                    }],
                 },
                 LootEntry {
                     kind: LootEntryKind::Item("minecraft:book"),
@@ -43799,7 +43826,19 @@ pub static CHESTS_ANCIENT_CITY: LootTable = LootTable {
                     weight: 3i32,
                     quality: 0i32,
                     condition: LootCondition::None,
-                    functions: &[],
+                    functions: &[LootFunction {
+                        kind: LootFunctionKind::EnchantWithLevels {
+                            levels: LootNumberProvider::Uniform {
+                                min: 20f64,
+                                max: 39f64,
+                            },
+                            options: Some(std::borrow::Cow::Borrowed(&[
+                                std::borrow::Cow::Borrowed("#minecraft:on_random_loot"),
+                            ])),
+                        },
+                        enchantment: None,
+                        condition: LootCondition::None,
+                    }],
                 },
                 LootEntry {
                     kind: LootEntryKind::Item("minecraft:echo_shard"),
@@ -46622,105 +46661,285 @@ pub static CHESTS_END_CITY_TREASURE: LootTable = LootTable {
                     weight: 3i32,
                     quality: 0i32,
                     condition: LootCondition::None,
-                    functions: &[],
+                    functions: &[LootFunction {
+                        kind: LootFunctionKind::EnchantWithLevels {
+                            levels: LootNumberProvider::Uniform {
+                                min: 20f64,
+                                max: 39f64,
+                            },
+                            options: Some(std::borrow::Cow::Borrowed(&[
+                                std::borrow::Cow::Borrowed("#minecraft:on_random_loot"),
+                            ])),
+                        },
+                        enchantment: None,
+                        condition: LootCondition::None,
+                    }],
                 },
                 LootEntry {
                     kind: LootEntryKind::Item("minecraft:diamond_spear"),
                     weight: 3i32,
                     quality: 0i32,
                     condition: LootCondition::None,
-                    functions: &[],
+                    functions: &[LootFunction {
+                        kind: LootFunctionKind::EnchantWithLevels {
+                            levels: LootNumberProvider::Uniform {
+                                min: 20f64,
+                                max: 39f64,
+                            },
+                            options: Some(std::borrow::Cow::Borrowed(&[
+                                std::borrow::Cow::Borrowed("#minecraft:on_random_loot"),
+                            ])),
+                        },
+                        enchantment: None,
+                        condition: LootCondition::None,
+                    }],
                 },
                 LootEntry {
                     kind: LootEntryKind::Item("minecraft:diamond_boots"),
                     weight: 3i32,
                     quality: 0i32,
                     condition: LootCondition::None,
-                    functions: &[],
+                    functions: &[LootFunction {
+                        kind: LootFunctionKind::EnchantWithLevels {
+                            levels: LootNumberProvider::Uniform {
+                                min: 20f64,
+                                max: 39f64,
+                            },
+                            options: Some(std::borrow::Cow::Borrowed(&[
+                                std::borrow::Cow::Borrowed("#minecraft:on_random_loot"),
+                            ])),
+                        },
+                        enchantment: None,
+                        condition: LootCondition::None,
+                    }],
                 },
                 LootEntry {
                     kind: LootEntryKind::Item("minecraft:diamond_chestplate"),
                     weight: 3i32,
                     quality: 0i32,
                     condition: LootCondition::None,
-                    functions: &[],
+                    functions: &[LootFunction {
+                        kind: LootFunctionKind::EnchantWithLevels {
+                            levels: LootNumberProvider::Uniform {
+                                min: 20f64,
+                                max: 39f64,
+                            },
+                            options: Some(std::borrow::Cow::Borrowed(&[
+                                std::borrow::Cow::Borrowed("#minecraft:on_random_loot"),
+                            ])),
+                        },
+                        enchantment: None,
+                        condition: LootCondition::None,
+                    }],
                 },
                 LootEntry {
                     kind: LootEntryKind::Item("minecraft:diamond_leggings"),
                     weight: 3i32,
                     quality: 0i32,
                     condition: LootCondition::None,
-                    functions: &[],
+                    functions: &[LootFunction {
+                        kind: LootFunctionKind::EnchantWithLevels {
+                            levels: LootNumberProvider::Uniform {
+                                min: 20f64,
+                                max: 39f64,
+                            },
+                            options: Some(std::borrow::Cow::Borrowed(&[
+                                std::borrow::Cow::Borrowed("#minecraft:on_random_loot"),
+                            ])),
+                        },
+                        enchantment: None,
+                        condition: LootCondition::None,
+                    }],
                 },
                 LootEntry {
                     kind: LootEntryKind::Item("minecraft:diamond_helmet"),
                     weight: 3i32,
                     quality: 0i32,
                     condition: LootCondition::None,
-                    functions: &[],
+                    functions: &[LootFunction {
+                        kind: LootFunctionKind::EnchantWithLevels {
+                            levels: LootNumberProvider::Uniform {
+                                min: 20f64,
+                                max: 39f64,
+                            },
+                            options: Some(std::borrow::Cow::Borrowed(&[
+                                std::borrow::Cow::Borrowed("#minecraft:on_random_loot"),
+                            ])),
+                        },
+                        enchantment: None,
+                        condition: LootCondition::None,
+                    }],
                 },
                 LootEntry {
                     kind: LootEntryKind::Item("minecraft:diamond_pickaxe"),
                     weight: 3i32,
                     quality: 0i32,
                     condition: LootCondition::None,
-                    functions: &[],
+                    functions: &[LootFunction {
+                        kind: LootFunctionKind::EnchantWithLevels {
+                            levels: LootNumberProvider::Uniform {
+                                min: 20f64,
+                                max: 39f64,
+                            },
+                            options: Some(std::borrow::Cow::Borrowed(&[
+                                std::borrow::Cow::Borrowed("#minecraft:on_random_loot"),
+                            ])),
+                        },
+                        enchantment: None,
+                        condition: LootCondition::None,
+                    }],
                 },
                 LootEntry {
                     kind: LootEntryKind::Item("minecraft:diamond_shovel"),
                     weight: 3i32,
                     quality: 0i32,
                     condition: LootCondition::None,
-                    functions: &[],
+                    functions: &[LootFunction {
+                        kind: LootFunctionKind::EnchantWithLevels {
+                            levels: LootNumberProvider::Uniform {
+                                min: 20f64,
+                                max: 39f64,
+                            },
+                            options: Some(std::borrow::Cow::Borrowed(&[
+                                std::borrow::Cow::Borrowed("#minecraft:on_random_loot"),
+                            ])),
+                        },
+                        enchantment: None,
+                        condition: LootCondition::None,
+                    }],
                 },
                 LootEntry {
                     kind: LootEntryKind::Item("minecraft:iron_sword"),
                     weight: 3i32,
                     quality: 0i32,
                     condition: LootCondition::None,
-                    functions: &[],
+                    functions: &[LootFunction {
+                        kind: LootFunctionKind::EnchantWithLevels {
+                            levels: LootNumberProvider::Uniform {
+                                min: 20f64,
+                                max: 39f64,
+                            },
+                            options: Some(std::borrow::Cow::Borrowed(&[
+                                std::borrow::Cow::Borrowed("#minecraft:on_random_loot"),
+                            ])),
+                        },
+                        enchantment: None,
+                        condition: LootCondition::None,
+                    }],
                 },
                 LootEntry {
                     kind: LootEntryKind::Item("minecraft:iron_boots"),
                     weight: 3i32,
                     quality: 0i32,
                     condition: LootCondition::None,
-                    functions: &[],
+                    functions: &[LootFunction {
+                        kind: LootFunctionKind::EnchantWithLevels {
+                            levels: LootNumberProvider::Uniform {
+                                min: 20f64,
+                                max: 39f64,
+                            },
+                            options: Some(std::borrow::Cow::Borrowed(&[
+                                std::borrow::Cow::Borrowed("#minecraft:on_random_loot"),
+                            ])),
+                        },
+                        enchantment: None,
+                        condition: LootCondition::None,
+                    }],
                 },
                 LootEntry {
                     kind: LootEntryKind::Item("minecraft:iron_chestplate"),
                     weight: 3i32,
                     quality: 0i32,
                     condition: LootCondition::None,
-                    functions: &[],
+                    functions: &[LootFunction {
+                        kind: LootFunctionKind::EnchantWithLevels {
+                            levels: LootNumberProvider::Uniform {
+                                min: 20f64,
+                                max: 39f64,
+                            },
+                            options: Some(std::borrow::Cow::Borrowed(&[
+                                std::borrow::Cow::Borrowed("#minecraft:on_random_loot"),
+                            ])),
+                        },
+                        enchantment: None,
+                        condition: LootCondition::None,
+                    }],
                 },
                 LootEntry {
                     kind: LootEntryKind::Item("minecraft:iron_leggings"),
                     weight: 3i32,
                     quality: 0i32,
                     condition: LootCondition::None,
-                    functions: &[],
+                    functions: &[LootFunction {
+                        kind: LootFunctionKind::EnchantWithLevels {
+                            levels: LootNumberProvider::Uniform {
+                                min: 20f64,
+                                max: 39f64,
+                            },
+                            options: Some(std::borrow::Cow::Borrowed(&[
+                                std::borrow::Cow::Borrowed("#minecraft:on_random_loot"),
+                            ])),
+                        },
+                        enchantment: None,
+                        condition: LootCondition::None,
+                    }],
                 },
                 LootEntry {
                     kind: LootEntryKind::Item("minecraft:iron_helmet"),
                     weight: 3i32,
                     quality: 0i32,
                     condition: LootCondition::None,
-                    functions: &[],
+                    functions: &[LootFunction {
+                        kind: LootFunctionKind::EnchantWithLevels {
+                            levels: LootNumberProvider::Uniform {
+                                min: 20f64,
+                                max: 39f64,
+                            },
+                            options: Some(std::borrow::Cow::Borrowed(&[
+                                std::borrow::Cow::Borrowed("#minecraft:on_random_loot"),
+                            ])),
+                        },
+                        enchantment: None,
+                        condition: LootCondition::None,
+                    }],
                 },
                 LootEntry {
                     kind: LootEntryKind::Item("minecraft:iron_pickaxe"),
                     weight: 3i32,
                     quality: 0i32,
                     condition: LootCondition::None,
-                    functions: &[],
+                    functions: &[LootFunction {
+                        kind: LootFunctionKind::EnchantWithLevels {
+                            levels: LootNumberProvider::Uniform {
+                                min: 20f64,
+                                max: 39f64,
+                            },
+                            options: Some(std::borrow::Cow::Borrowed(&[
+                                std::borrow::Cow::Borrowed("#minecraft:on_random_loot"),
+                            ])),
+                        },
+                        enchantment: None,
+                        condition: LootCondition::None,
+                    }],
                 },
                 LootEntry {
                     kind: LootEntryKind::Item("minecraft:iron_shovel"),
                     weight: 3i32,
                     quality: 0i32,
                     condition: LootCondition::None,
-                    functions: &[],
+                    functions: &[LootFunction {
+                        kind: LootFunctionKind::EnchantWithLevels {
+                            levels: LootNumberProvider::Uniform {
+                                min: 20f64,
+                                max: 39f64,
+                            },
+                            options: Some(std::borrow::Cow::Borrowed(&[
+                                std::borrow::Cow::Borrowed("#minecraft:on_random_loot"),
+                            ])),
+                        },
+                        enchantment: None,
+                        condition: LootCondition::None,
+                    }],
                 },
             ],
             rolls: LootNumberProvider::Uniform {
@@ -47047,7 +47266,16 @@ pub static CHESTS_JUNGLE_TEMPLE: LootTable = LootTable {
                     weight: 1i32,
                     quality: 0i32,
                     condition: LootCondition::None,
-                    functions: &[],
+                    functions: &[LootFunction {
+                        kind: LootFunctionKind::EnchantWithLevels {
+                            levels: LootNumberProvider::Constant(30f64),
+                            options: Some(std::borrow::Cow::Borrowed(&[
+                                std::borrow::Cow::Borrowed("#minecraft:on_random_loot"),
+                            ])),
+                        },
+                        enchantment: None,
+                        condition: LootCondition::None,
+                    }],
                 },
             ],
             rolls: LootNumberProvider::Uniform {
@@ -49526,7 +49754,16 @@ pub static CHESTS_STRONGHOLD_CORRIDOR: LootTable = LootTable {
                     weight: 1i32,
                     quality: 0i32,
                     condition: LootCondition::None,
-                    functions: &[],
+                    functions: &[LootFunction {
+                        kind: LootFunctionKind::EnchantWithLevels {
+                            levels: LootNumberProvider::Constant(30f64),
+                            options: Some(std::borrow::Cow::Borrowed(&[
+                                std::borrow::Cow::Borrowed("#minecraft:on_random_loot"),
+                            ])),
+                        },
+                        enchantment: None,
+                        condition: LootCondition::None,
+                    }],
                 },
             ],
             rolls: LootNumberProvider::Uniform {
@@ -49679,7 +49916,16 @@ pub static CHESTS_STRONGHOLD_CROSSING: LootTable = LootTable {
                 weight: 1i32,
                 quality: 0i32,
                 condition: LootCondition::None,
-                functions: &[],
+                functions: &[LootFunction {
+                    kind: LootFunctionKind::EnchantWithLevels {
+                        levels: LootNumberProvider::Constant(30f64),
+                        options: Some(std::borrow::Cow::Borrowed(&[std::borrow::Cow::Borrowed(
+                            "#minecraft:on_random_loot",
+                        )])),
+                    },
+                    enchantment: None,
+                    condition: LootCondition::None,
+                }],
             },
         ],
         rolls: LootNumberProvider::Uniform {
@@ -49749,7 +49995,16 @@ pub static CHESTS_STRONGHOLD_LIBRARY: LootTable = LootTable {
                     weight: 10i32,
                     quality: 0i32,
                     condition: LootCondition::None,
-                    functions: &[],
+                    functions: &[LootFunction {
+                        kind: LootFunctionKind::EnchantWithLevels {
+                            levels: LootNumberProvider::Constant(30f64),
+                            options: Some(std::borrow::Cow::Borrowed(&[
+                                std::borrow::Cow::Borrowed("#minecraft:on_random_loot"),
+                            ])),
+                        },
+                        enchantment: None,
+                        condition: LootCondition::None,
+                    }],
                 },
             ],
             rolls: LootNumberProvider::Uniform {
@@ -50729,7 +50984,19 @@ pub static CHESTS_TRIAL_CHAMBERS_REWARD_OMINOUS_RARE: LootTable = LootTable {
                 weight: 4i32,
                 quality: 0i32,
                 condition: LootCondition::None,
-                functions: &[],
+                functions: &[LootFunction {
+                    kind: LootFunctionKind::EnchantWithLevels {
+                        levels: LootNumberProvider::Uniform {
+                            min: 5f64,
+                            max: 20f64,
+                        },
+                        options: Some(std::borrow::Cow::Borrowed(&[std::borrow::Cow::Borrowed(
+                            "#minecraft:on_random_loot",
+                        )])),
+                    },
+                    enchantment: None,
+                    condition: LootCondition::None,
+                }],
             },
             LootEntry {
                 kind: LootEntryKind::Item("minecraft:golden_apple"),
@@ -50743,14 +51010,38 @@ pub static CHESTS_TRIAL_CHAMBERS_REWARD_OMINOUS_RARE: LootTable = LootTable {
                 weight: 3i32,
                 quality: 0i32,
                 condition: LootCondition::None,
-                functions: &[],
+                functions: &[LootFunction {
+                    kind: LootFunctionKind::EnchantWithLevels {
+                        levels: LootNumberProvider::Uniform {
+                            min: 10f64,
+                            max: 20f64,
+                        },
+                        options: Some(std::borrow::Cow::Borrowed(&[std::borrow::Cow::Borrowed(
+                            "#minecraft:on_random_loot",
+                        )])),
+                    },
+                    enchantment: None,
+                    condition: LootCondition::None,
+                }],
             },
             LootEntry {
                 kind: LootEntryKind::Item("minecraft:diamond_chestplate"),
                 weight: 3i32,
                 quality: 0i32,
                 condition: LootCondition::None,
-                functions: &[],
+                functions: &[LootFunction {
+                    kind: LootFunctionKind::EnchantWithLevels {
+                        levels: LootNumberProvider::Uniform {
+                            min: 10f64,
+                            max: 20f64,
+                        },
+                        options: Some(std::borrow::Cow::Borrowed(&[std::borrow::Cow::Borrowed(
+                            "#minecraft:on_random_loot",
+                        )])),
+                    },
+                    enchantment: None,
+                    condition: LootCondition::None,
+                }],
             },
             LootEntry {
                 kind: LootEntryKind::Item("minecraft:book"),
@@ -50866,28 +51157,76 @@ pub static CHESTS_TRIAL_CHAMBERS_REWARD_RARE: LootTable = LootTable {
                 weight: 3i32,
                 quality: 0i32,
                 condition: LootCondition::None,
-                functions: &[],
+                functions: &[LootFunction {
+                    kind: LootFunctionKind::EnchantWithLevels {
+                        levels: LootNumberProvider::Uniform {
+                            min: 5f64,
+                            max: 15f64,
+                        },
+                        options: Some(std::borrow::Cow::Borrowed(&[std::borrow::Cow::Borrowed(
+                            "#minecraft:on_random_loot",
+                        )])),
+                    },
+                    enchantment: None,
+                    condition: LootCondition::None,
+                }],
             },
             LootEntry {
                 kind: LootEntryKind::Item("minecraft:crossbow"),
                 weight: 2i32,
                 quality: 0i32,
                 condition: LootCondition::None,
-                functions: &[],
+                functions: &[LootFunction {
+                    kind: LootFunctionKind::EnchantWithLevels {
+                        levels: LootNumberProvider::Uniform {
+                            min: 5f64,
+                            max: 20f64,
+                        },
+                        options: Some(std::borrow::Cow::Borrowed(&[std::borrow::Cow::Borrowed(
+                            "#minecraft:on_random_loot",
+                        )])),
+                    },
+                    enchantment: None,
+                    condition: LootCondition::None,
+                }],
             },
             LootEntry {
                 kind: LootEntryKind::Item("minecraft:iron_axe"),
                 weight: 2i32,
                 quality: 0i32,
                 condition: LootCondition::None,
-                functions: &[],
+                functions: &[LootFunction {
+                    kind: LootFunctionKind::EnchantWithLevels {
+                        levels: LootNumberProvider::Uniform {
+                            min: 0f64,
+                            max: 10f64,
+                        },
+                        options: Some(std::borrow::Cow::Borrowed(&[std::borrow::Cow::Borrowed(
+                            "#minecraft:on_random_loot",
+                        )])),
+                    },
+                    enchantment: None,
+                    condition: LootCondition::None,
+                }],
             },
             LootEntry {
                 kind: LootEntryKind::Item("minecraft:iron_chestplate"),
                 weight: 2i32,
                 quality: 0i32,
                 condition: LootCondition::None,
-                functions: &[],
+                functions: &[LootFunction {
+                    kind: LootFunctionKind::EnchantWithLevels {
+                        levels: LootNumberProvider::Uniform {
+                            min: 0f64,
+                            max: 10f64,
+                        },
+                        options: Some(std::borrow::Cow::Borrowed(&[std::borrow::Cow::Borrowed(
+                            "#minecraft:on_random_loot",
+                        )])),
+                    },
+                    enchantment: None,
+                    condition: LootCondition::None,
+                }],
             },
             LootEntry {
                 kind: LootEntryKind::Item("minecraft:golden_carrot"),
@@ -50925,14 +51264,38 @@ pub static CHESTS_TRIAL_CHAMBERS_REWARD_RARE: LootTable = LootTable {
                 weight: 1i32,
                 quality: 0i32,
                 condition: LootCondition::None,
-                functions: &[],
+                functions: &[LootFunction {
+                    kind: LootFunctionKind::EnchantWithLevels {
+                        levels: LootNumberProvider::Uniform {
+                            min: 5f64,
+                            max: 15f64,
+                        },
+                        options: Some(std::borrow::Cow::Borrowed(&[std::borrow::Cow::Borrowed(
+                            "#minecraft:on_random_loot",
+                        )])),
+                    },
+                    enchantment: None,
+                    condition: LootCondition::None,
+                }],
             },
             LootEntry {
                 kind: LootEntryKind::Item("minecraft:diamond_axe"),
                 weight: 1i32,
                 quality: 0i32,
                 condition: LootCondition::None,
-                functions: &[],
+                functions: &[LootFunction {
+                    kind: LootFunctionKind::EnchantWithLevels {
+                        levels: LootNumberProvider::Uniform {
+                            min: 5f64,
+                            max: 15f64,
+                        },
+                        options: Some(std::borrow::Cow::Borrowed(&[std::borrow::Cow::Borrowed(
+                            "#minecraft:on_random_loot",
+                        )])),
+                    },
+                    enchantment: None,
+                    condition: LootCondition::None,
+                }],
             },
         ],
         rolls: LootNumberProvider::Constant(1f64),
@@ -59571,21 +59934,48 @@ pub static GAMEPLAY_FISHING_TREASURE: LootTable = LootTable {
                 weight: 1i32,
                 quality: 0i32,
                 condition: LootCondition::None,
-                functions: &[],
+                functions: &[LootFunction {
+                    kind: LootFunctionKind::EnchantWithLevels {
+                        levels: LootNumberProvider::Constant(30f64),
+                        options: Some(std::borrow::Cow::Borrowed(&[std::borrow::Cow::Borrowed(
+                            "#minecraft:on_random_loot",
+                        )])),
+                    },
+                    enchantment: None,
+                    condition: LootCondition::None,
+                }],
             },
             LootEntry {
                 kind: LootEntryKind::Item("minecraft:fishing_rod"),
                 weight: 1i32,
                 quality: 0i32,
                 condition: LootCondition::None,
-                functions: &[],
+                functions: &[LootFunction {
+                    kind: LootFunctionKind::EnchantWithLevels {
+                        levels: LootNumberProvider::Constant(30f64),
+                        options: Some(std::borrow::Cow::Borrowed(&[std::borrow::Cow::Borrowed(
+                            "#minecraft:on_random_loot",
+                        )])),
+                    },
+                    enchantment: None,
+                    condition: LootCondition::None,
+                }],
             },
             LootEntry {
                 kind: LootEntryKind::Item("minecraft:book"),
                 weight: 1i32,
                 quality: 0i32,
                 condition: LootCondition::None,
-                functions: &[],
+                functions: &[LootFunction {
+                    kind: LootFunctionKind::EnchantWithLevels {
+                        levels: LootNumberProvider::Constant(30f64),
+                        options: Some(std::borrow::Cow::Borrowed(&[std::borrow::Cow::Borrowed(
+                            "#minecraft:on_random_loot",
+                        )])),
+                    },
+                    enchantment: None,
+                    condition: LootCondition::None,
+                }],
             },
             LootEntry {
                 kind: LootEntryKind::Item("minecraft:nautilus_shell"),

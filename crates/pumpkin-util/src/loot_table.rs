@@ -117,6 +117,10 @@ pub enum LootFunctionKind {
     ApplyBonus(LootBonusFormula),
     FurnaceSmelt,
     SetStewEffect(Cow<'static, [LootStewEffect]>),
+    EnchantWithLevels {
+        levels: LootNumberProvider,
+        options: Option<Cow<'static, [Cow<'static, str>]>>,
+    },
 }
 
 #[derive(Clone, Debug)]

@@ -256,6 +256,17 @@ impl Generator {
                         });
                         quote! { LootFunctionKind::SetStewEffect(std::borrow::Cow::Borrowed(&[#(#effects),*])) }
                     }
+                    LootFunctionKind::EnchantWithLevels { levels, ref options } => {
+                        let levels = number_tokens(levels);
+                        let options = options.as_ref().map_or_else(|| quote! { None }, |options| {
+                            let names = options.iter().map(|name| {
+                                let name = name.as_ref();
+                                quote! { std::borrow::Cow::Borrowed(#name) }
+                            });
+                            quote! { Some(std::borrow::Cow::Borrowed(&[#(#names),*])) }
+                        });
+                        quote! { LootFunctionKind::EnchantWithLevels { levels: #levels, options: #options } }
+                    }
                 };
                 let condition = self.condition(&function.condition);
                 let enchantment = function.enchantment.as_ref().map_or_else(|| quote! {None}, |name| quote! {Some(#name)});
