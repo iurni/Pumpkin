@@ -131,7 +131,8 @@ impl FishingBobberEntity {
                 .unwrap_or(LootTableHandle::Static(
                     &pumpkin_data::loot_table::GAMEPLAY_FISHING,
                 ));
-            let items = generate_loot_from_handle(&handle, 0, &params);
+            let seed: i64 = rand::random();
+            let items = generate_loot_from_handle(&handle, seed, &params);
             let delta = player_pos - bobber_pos;
             let vy = delta.y * 0.1 + delta.length().sqrt() * 0.08;
 
