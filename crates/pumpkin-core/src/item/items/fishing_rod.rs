@@ -30,7 +30,11 @@ impl ItemBehaviour for FishingRodItem {
 
     fn normal_use_with_hand(&self, item: &Item, player: &Player, yaw: f32, pitch: f32, hand: Hand) {
         let world = player.world();
-        let bobber_id = player.fishing_bobber.load(Ordering::Relaxed);
+        let mut bobber_id = player.fishing_bobber.load(Ordering::Relaxed);
+        if bobber_id != -1 && world.get_entity_by_id(bobber_id).is_none() {
+            player.fishing_bobber.store(-1, Ordering::Relaxed);
+            bobber_id = -1;
+        }
         let rod = player.inventory().get_stack_in_hand(hand);
 
         if bobber_id == -1 {
@@ -42,7 +46,6 @@ impl ItemBehaviour for FishingRodItem {
                 0.5,
                 0.4 / (rand::random::<f32>() * 0.4 + 0.8),
             );
-
             let time_reduction =
                 (crate::enchantment::helper::EnchantmentHelper::modify_fishing_time_reduction(
                     &rod, 0.0,
@@ -61,7 +64,7 @@ impl ItemBehaviour for FishingRodItem {
             );
             let bobber_entity = Entity::new(world.clone(), spawn_pos, &EntityType::FISHING_BOBBER);
             let bobber = FishingBobberEntity::new_with_rod(bobber_entity, player, time_reduction);
-            bobber.entity.pos.store(spawn_pos);
+            bobber.entity.set_pos(spawn_pos);
 
             let dir = Vector3::new(
                 f64::from(-y_sin),
@@ -76,13 +79,21 @@ impl ItemBehaviour for FishingRodItem {
                 0.6 / dist + triangle(),
             );
             bobber.entity.velocity.store(velocity);
+            bobber.entity.set_rotation(
+                velocity.x.atan2(velocity.z).to_degrees() as f32,
+                velocity.y.atan2(velocity.horizontal_length()).to_degrees() as f32,
+            );
+            bobber.entity.update_last_pos();
 
             player
                 .fishing_bobber
                 .store(bobber.entity.entity_id, Ordering::Relaxed);
 
             let bobber_arc: Arc<FishingBobberEntity> = Arc::new(bobber);
-            world.spawn_entity(bobber_arc);
+            if !world.spawn_entity(bobber_arc) {
+                player.fishing_bobber.store(-1, Ordering::Relaxed);
+                return;
+            }
 
             player.increment_stat(StatisticCategory::Used, i32::from(item.id), 1);
         } else {
