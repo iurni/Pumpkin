@@ -1065,7 +1065,7 @@ impl MobEntity {
             target,
             attack_damage,
             DamageType::MOB_ATTACK,
-            None,
+            Some(caller.get_entity().pos.load()),
             Some(caller),
             Some(caller),
         );

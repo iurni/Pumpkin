@@ -1746,7 +1746,7 @@ impl Player {
             victim.as_ref(),
             damage as f32,
             damage_type,
-            None,
+            Some(attacker_entity.pos.load()),
             Some(self),
             Some(self),
         ) {
@@ -1864,7 +1864,7 @@ impl Player {
                                 other_victim.as_ref(),
                                 sweep_damage,
                                 DamageType::PLAYER_ATTACK,
-                                None,
+                                Some(attacker_entity.pos.load()),
                                 Some(self),
                                 Some(self),
                             );
