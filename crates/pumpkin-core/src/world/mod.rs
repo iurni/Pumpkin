@@ -136,8 +136,8 @@ use pumpkin_protocol::{
         self,
         client::play::{
             CBlockEntityData, CDamageEvent, CEntityStatus, CGameEvent, CLogin, CMultiBlockUpdate,
-            CPlayerInfoUpdate, CRemoveEntities, CRemovePlayerInfo, CSetSelectedSlot, CSoundEffect,
-            GameEvent, InitChat, PlayerAction, PlayerInfoFlags,
+            CPlayerInfoUpdate, CRemoveEntities, CSetSelectedSlot, CSoundEffect, GameEvent,
+            InitChat, PlayerAction, PlayerInfoFlags,
         },
         server::play::SChatMessage,
     },
@@ -3591,52 +3591,14 @@ impl World {
 
         let gameprofile = &player.gameprofile;
 
-        // 1. Broadcast the new Bedrock player to everyone else (Java + Bedrock)
-        let bedrock_player_list = CPlayerList {
-            action: CPlayerList::ACTION_ADD,
-            entries: vec![PlayerListEntry {
-                uuid: gameprofile.id,
-                entity_unique_id: VarLong(runtime_id as i64),
-                username: gameprofile.name.clone(),
-                xuid: String::new(),
-                platform_chat_id: String::new(),
-                build_platform: BuildPlatform::Unknown,
-                skin: (**player.bedrock_skin.load()).clone(),
-                is_teacher: false,
-                is_host: false,
-                is_sub_client: player.client.bedrock().is_some_and(|c| c.is_sub_client()),
-                player_color: [0, 0, 0, 0],
-            }],
-        };
-
-        let gamemode = player.gamemode.load();
-        self.broadcast_packet_except_editioned(
-            &[gameprofile.id],
-            &CPlayerInfoUpdate::new(
-                (PlayerInfoFlags::ADD_PLAYER
-                    | PlayerInfoFlags::UPDATE_GAME_MODE
-                    | PlayerInfoFlags::UPDATE_LISTED
-                    | PlayerInfoFlags::UPDATE_LATENCY
-                    | PlayerInfoFlags::UPDATE_LIST_PRIORITY
-                    | PlayerInfoFlags::UPDATE_HAT)
-                    .bits(),
-                &[pumpkin_protocol::java::client::play::Player {
-                    uuid: gameprofile.id,
-                    actions: &[
-                        PlayerAction::AddPlayer {
-                            name: &gameprofile.name,
-                            properties: &gameprofile.properties.load(),
-                        },
-                        PlayerAction::UpdateGameMode(VarInt(gamemode as i32)),
-                        PlayerAction::UpdateListed(true),
-                        PlayerAction::UpdateLatency(VarInt(0)),
-                        PlayerAction::UpdateListOrder(VarInt(0)),
-                        PlayerAction::UpdateHat(true),
-                    ],
-                }],
-            ),
-            &bedrock_player_list,
-        );
+        {
+            let _membership = server.tab_list_membership.lock().await;
+            server.add_tab_list_player(&player);
+            Self::with_java_tab_list_entry(&player, |packet| {
+                server.broadcast_java_tab_list(packet);
+            });
+        }
+        self.broadcast_bedrock_tab_list_entry(&player);
 
         // Vanilla `level.addNewPlayer`: in-range viewers get the spawn from the tracker.
         self.entity_tracker
@@ -3777,42 +3739,12 @@ impl World {
         // tab list before `level.addNewPlayer`.
         // Java drops a player spawn whose info entry is missing and never retries,
         // so this must precede entity tracking and the first chunks.
+        let membership = server.tab_list_membership.lock().await;
+        server.add_tab_list_player(player);
         let gameprofile = &player.gameprofile;
-        let bedrock_player_list = CPlayerList {
-            action: CPlayerList::ACTION_ADD,
-            entries: vec![PlayerListEntry {
-                uuid: gameprofile.id,
-                entity_unique_id: VarLong(entity_id as i64),
-                username: gameprofile.name.clone(),
-                xuid: String::new(),
-                platform_chat_id: String::new(),
-                build_platform: BuildPlatform::Unknown,
-                skin: (**player.bedrock_skin.load()).clone(),
-                is_teacher: false,
-                is_host: false,
-                is_sub_client: false,
-                player_color: [0, 0, 0, 0],
-            }],
-        };
-
-        let player_actions = [
-            PlayerAction::AddPlayer {
-                name: &gameprofile.name,
-                properties: &gameprofile.properties.load(),
-            },
-            PlayerAction::UpdateGameMode(VarInt(gamemode as i32)),
-            PlayerAction::UpdateListed(true),
-            PlayerAction::UpdateLatency(VarInt(0)),
-            PlayerAction::UpdateListOrder(VarInt(0)),
-            PlayerAction::UpdateHat(true),
-        ];
-        let java_player = [pumpkin_protocol::java::client::play::Player {
-            uuid: gameprofile.id,
-            actions: &player_actions,
-        }];
-        let player_info_update = CPlayerInfoUpdate::new(Self::TAB_LIST_ADD_FLAGS, &java_player);
-
-        self.broadcast_editioned(&player_info_update, &bedrock_player_list);
+        Self::with_java_tab_list_entry(player, |packet| {
+            server.broadcast_java_tab_list(packet);
+        });
 
         // If the player has a custom tab_list_name, send an update for it
         if let Some(tab_list_name) = player.get_tab_list_name() {
@@ -3821,7 +3753,7 @@ impl World {
                 uuid: gameprofile.id,
                 actions: &actions,
             }];
-            self.broadcast_packet_all(&CPlayerInfoUpdate::new(
+            server.broadcast_java_tab_list(&CPlayerInfoUpdate::new(
                 PlayerInfoFlags::UPDATE_DISPLAY_NAME.bits(),
                 &java_player,
             ));
@@ -3830,7 +3762,7 @@ impl World {
         // Here, we send all the infos of players who already joined.
         let mut players_tab_list_names = Vec::new();
         {
-            let players = self.players.load();
+            let players = server.tab_list_players.load();
             let mut data_to_process = Vec::new();
             for p in players
                 .iter()
@@ -3928,6 +3860,8 @@ impl World {
                 }
             }
         };
+        drop(membership);
+        self.broadcast_bedrock_tab_list_entry(player);
 
         // Send the current ticking state to the new player so they are in sync.
         server.tick_rate_manager.update_joining_player(player).await;
@@ -4030,10 +3964,6 @@ impl World {
             .iter()
             .filter(|c| c.gameprofile.id != id)
         {
-            Self::with_player_list_entry(existing_player, |java, bedrock| {
-                player.client.try_enqueue_packet_editioned(java, bedrock);
-            });
-
             let config = existing_player.config.load();
             let mut buf = Vec::new();
             {
@@ -5253,10 +5183,10 @@ impl World {
         Ok(())
     }
 
-    /// Tab-list add entry for `player` from its stored state, as Java and Bedrock packets.
-    fn with_player_list_entry<R>(
+    /// Tab-list add entry for `player` from its stored state.
+    fn with_java_tab_list_entry<R>(
         player: &Player,
-        f: impl FnOnce(&CPlayerInfoUpdate<'_>, &CPlayerList) -> R,
+        f: impl FnOnce(&CPlayerInfoUpdate<'_>) -> R,
     ) -> R {
         let profile = &player.gameprofile;
         let properties = profile.properties.load();
@@ -5275,27 +5205,32 @@ impl World {
             uuid: profile.id,
             actions: &actions,
         }];
-        f(
-            &CPlayerInfoUpdate::new(Self::TAB_LIST_ADD_FLAGS, &entry),
-            &player.bedrock_player_list(),
-        )
+        f(&CPlayerInfoUpdate::new(Self::TAB_LIST_ADD_FLAGS, &entry))
     }
 
-    /// Publishes a player from another world -> tab list first, Java drops spawns without it.
+    fn broadcast_bedrock_tab_list_entry(&self, player: &Player) {
+        let players = self.players.load();
+        Self::broadcast_bedrock_grouped(
+            &player.bedrock_player_list(),
+            players
+                .iter()
+                .filter(|existing| existing.gameprofile.id != player.gameprofile.id)
+                .filter_map(|existing| existing.client.bedrock()),
+        );
+    }
+
+    /// Registers a transferred player with the destination world's entity tracker.
     pub fn add_arriving_player(&self, player: &Arc<Player>) {
-        let id = player.gameprofile.id;
-        Self::with_player_list_entry(player, |java, bedrock| {
-            self.broadcast_packet_except_editioned(&[id], java, bedrock);
-        });
-        for existing in self
-            .players
-            .load()
-            .iter()
-            .filter(|p| p.gameprofile.id != id)
-        {
-            Self::with_player_list_entry(existing, |java, bedrock| {
-                player.client.try_enqueue_packet_editioned(java, bedrock);
-            });
+        self.broadcast_bedrock_tab_list_entry(player);
+        if let Some(client) = player.client.bedrock() {
+            for existing in self
+                .players
+                .load()
+                .iter()
+                .filter(|existing| existing.gameprofile.id != player.gameprofile.id)
+            {
+                client.try_enqueue_client_packet(&existing.bedrock_player_list());
+            }
         }
 
         self.entity_tracker
@@ -5348,7 +5283,7 @@ impl World {
     /// It performs the following actions:
     ///
     /// 1. Removes the player from the `current_players` map using their UUID.
-    /// 2. Broadcasts a `CRemovePlayerInfo` packet to all connected players to inform them about the player leaving.
+    /// 2. Removes the player from Java's global tab list on disconnect.
     /// 3. Removes the player's entity from the world using its entity ID.
     /// 4. Optionally sends a disconnect message to all other players notifying them about the player leaving.
     ///
@@ -5366,6 +5301,9 @@ impl World {
         player: &Arc<Player>,
         fire_event: bool,
     ) -> Option<Arc<Player>> {
+        if fire_event && let Some(server) = self.server.upgrade() {
+            server.remove_tab_list_player(player).await;
+        }
         let mut removed_player: Option<Arc<Player>> = None;
 
         self.players.rcu(|current_list| {
@@ -5403,7 +5341,7 @@ impl World {
                 }],
             };
 
-            self.broadcast_editioned(&CRemovePlayerInfo::new(&[uuid]), &bedrock_remove_player);
+            self.broadcast_bedrock_all(&bedrock_remove_player);
 
             self.broadcast_editioned(
                 &CRemoveEntities::new(&[entity_id.into()]),

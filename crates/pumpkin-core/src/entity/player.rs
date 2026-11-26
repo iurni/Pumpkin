@@ -1227,21 +1227,30 @@ impl Player {
         false
     }
 
+    fn broadcast_player_info(&self, flag: PlayerInfoFlags, action: PlayerAction<'_>) {
+        let entry = [pumpkin_protocol::java::client::play::Player {
+            uuid: self.gameprofile.id,
+            actions: &[action],
+        }];
+        let packet = CPlayerInfoUpdate::new(flag.bits(), &entry);
+        let world = self.world();
+        if let Some(server) = world.server.upgrade() {
+            server.broadcast_java_tab_list(&packet);
+        } else {
+            world.broadcast_packet_all(&packet);
+        }
+    }
+
     pub fn set_display_name(&self, display_name: Option<TextComponent>) {
         let mut guard = self
             .display_name
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *guard = display_name;
-        // Update the tab list for everyone
-        let world = self.world();
-        world.broadcast_packet_all(&CPlayerInfoUpdate::new(
-            PlayerInfoFlags::UPDATE_DISPLAY_NAME.bits(),
-            &[pumpkin_protocol::java::client::play::Player {
-                uuid: self.gameprofile.id,
-                actions: &[PlayerAction::UpdateDisplayName(guard.as_ref())],
-            }],
-        ));
+        self.broadcast_player_info(
+            PlayerInfoFlags::UPDATE_DISPLAY_NAME,
+            PlayerAction::UpdateDisplayName(guard.as_ref()),
+        );
     }
 
     pub fn get_tab_list_name(&self) -> Option<TextComponent> {
@@ -1257,50 +1266,34 @@ impl Player {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *guard = name;
-        let world = self.world();
-        world.broadcast_packet_all(&CPlayerInfoUpdate::new(
-            PlayerInfoFlags::UPDATE_DISPLAY_NAME.bits(),
-            &[pumpkin_protocol::java::client::play::Player {
-                uuid: self.gameprofile.id,
-                actions: &[PlayerAction::UpdateDisplayName(guard.as_ref())],
-            }],
-        ));
+        self.broadcast_player_info(
+            PlayerInfoFlags::UPDATE_DISPLAY_NAME,
+            PlayerAction::UpdateDisplayName(guard.as_ref()),
+        );
     }
 
     pub fn set_tab_list_order(&self, order: i32) {
         self.tab_list_order.store(order, Ordering::Relaxed);
-        let world = self.world();
-        world.broadcast_packet_all(&CPlayerInfoUpdate::new(
-            PlayerInfoFlags::UPDATE_LIST_PRIORITY.bits(),
-            &[pumpkin_protocol::java::client::play::Player {
-                uuid: self.gameprofile.id,
-                actions: &[PlayerAction::UpdateListOrder(VarInt(order))],
-            }],
-        ));
+        self.broadcast_player_info(
+            PlayerInfoFlags::UPDATE_LIST_PRIORITY,
+            PlayerAction::UpdateListOrder(VarInt(order)),
+        );
     }
 
     pub fn set_tab_list_latency(&self, latency: i32) {
         self.tab_list_latency.store(latency, Ordering::Relaxed);
-        let world = self.world();
-        world.broadcast_packet_all(&CPlayerInfoUpdate::new(
-            PlayerInfoFlags::UPDATE_LATENCY.bits(),
-            &[pumpkin_protocol::java::client::play::Player {
-                uuid: self.gameprofile.id,
-                actions: &[PlayerAction::UpdateLatency(VarInt(latency))],
-            }],
-        ));
+        self.broadcast_player_info(
+            PlayerInfoFlags::UPDATE_LATENCY,
+            PlayerAction::UpdateLatency(VarInt(latency)),
+        );
     }
 
     pub fn set_tab_list_listed(&self, listed: bool) {
         self.tab_list_listed.store(listed, Ordering::Relaxed);
-        let world = self.world();
-        world.broadcast_packet_all(&CPlayerInfoUpdate::new(
-            PlayerInfoFlags::UPDATE_LISTED.bits(),
-            &[pumpkin_protocol::java::client::play::Player {
-                uuid: self.gameprofile.id,
-                actions: &[PlayerAction::UpdateListed(listed)],
-            }],
-        ));
+        self.broadcast_player_info(
+            PlayerInfoFlags::UPDATE_LISTED,
+            PlayerAction::UpdateListed(listed),
+        );
     }
 
     /// Spawns a task associated with this player-client. All tasks spawned with this method are awaited
@@ -5947,17 +5940,10 @@ impl Player {
             .entity
             .no_physics
             .store(gamemode == GameMode::Spectator, Ordering::Relaxed);
-        self.living_entity
-            .entity
-            .world
-            .load()
-            .broadcast_packet_all(&CPlayerInfoUpdate::new(
-                PlayerInfoFlags::UPDATE_GAME_MODE.bits(),
-                &[pumpkin_protocol::java::client::play::Player {
-                    uuid: self.gameprofile.id,
-                    actions: &[PlayerAction::UpdateGameMode((gamemode as i32).into())],
-                }],
-            ));
+        self.broadcast_player_info(
+            PlayerInfoFlags::UPDATE_GAME_MODE,
+            PlayerAction::UpdateGameMode((gamemode as i32).into()),
+        );
 
         self.client.try_enqueue_packet_editioned(
             &CGameEvent::new(GameEvent::ChangeGameMode, gamemode as i32 as f32),

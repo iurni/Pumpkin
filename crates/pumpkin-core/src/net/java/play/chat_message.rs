@@ -225,7 +225,7 @@ impl JavaClient {
             session.key_signature.clone(),
         );
 
-        server.broadcast_packet_all(&CPlayerInfoUpdate::new(
+        server.broadcast_java_tab_list(&CPlayerInfoUpdate::new(
             PlayerInfoFlags::INITIALIZE_CHAT.bits(),
             &[pumpkin_protocol::java::client::play::Player {
                 uuid: player.gameprofile.id,

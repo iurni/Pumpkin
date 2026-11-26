@@ -31,7 +31,7 @@ use pumpkin_world::world::WorldPortalExt;
 use tracing::{debug, error, info, warn};
 
 use pumpkin_protocol::java::client::login::CEncryptionRequest;
-use pumpkin_protocol::java::client::play::{CChangeDifficulty, CTabList};
+use pumpkin_protocol::java::client::play::{CChangeDifficulty, CRemovePlayerInfo, CTabList};
 use pumpkin_protocol::{ClientPacket, java::client::config::CPluginMessage};
 use pumpkin_util::Difficulty;
 use pumpkin_util::text::TextComponent;
@@ -102,6 +102,9 @@ pub struct Server {
     pub item_registry: Arc<ItemRegistry>,
     /// Manages multiple worlds within the server.
     pub worlds: ArcSwap<Vec<Arc<World>>>,
+    // Play-stage members stay listed while their world membership is changing.
+    pub(crate) tab_list_players: ArcSwap<Vec<Arc<Player>>>,
+    pub(crate) tab_list_membership: tokio::sync::Mutex<()>,
     /// All the dimensions that exist on the server.
     pub dimensions: Vec<Dimension>,
     /// Assigns unique IDs to containers.
@@ -338,6 +341,8 @@ impl Server {
             enchantment_manager: Arc::new(enchantment::EnchantmentManager::new()),
             map_id: level_info.load().map_id.into(),
             worlds: ArcSwap::from_pointee(vec![]),
+            tab_list_players: ArcSwap::from_pointee(vec![]),
+            tab_list_membership: tokio::sync::Mutex::new(()),
             dimensions,
             command_dispatcher,
             block_registry: block_registry.clone(),
@@ -906,6 +911,35 @@ impl Server {
         for world in self.worlds.load().iter() {
             world.broadcast_packet_all(packet);
         }
+    }
+
+    /// Register a play-stage member while holding `tab_list_membership`.
+    pub(crate) fn add_tab_list_player(&self, player: &Arc<Player>) {
+        let mut players = (**self.tab_list_players.load()).clone();
+        players.retain(|existing| existing.gameprofile.id != player.gameprofile.id);
+        players.push(player.clone());
+        self.tab_list_players.store(Arc::new(players));
+    }
+
+    pub(crate) async fn remove_tab_list_player(&self, player: &Arc<Player>) {
+        let _membership = self.tab_list_membership.lock().await;
+        let current = self.tab_list_players.load_full();
+        if !current.iter().any(|existing| Arc::ptr_eq(existing, player)) {
+            return;
+        }
+        self.tab_list_players.store(Arc::new(
+            current
+                .iter()
+                .filter(|existing| !Arc::ptr_eq(existing, player))
+                .cloned()
+                .collect(),
+        ));
+        self.broadcast_java_tab_list(&CRemovePlayerInfo::new(&[player.gameprofile.id]));
+    }
+
+    pub(crate) fn broadcast_java_tab_list<P: ClientPacket>(&self, packet: &P) {
+        let players = self.tab_list_players.load();
+        World::broadcast_java_players(packet, players.iter());
     }
 
     /// Broadcasts custom server links to all players on the server.
