@@ -1035,6 +1035,13 @@ pub trait EntityBase: Send + Sync + std::any::Any {
         self.get_entity().has_vehicle()
     }
 
+    fn can_ride(&self, vehicle: &dyn EntityBase) -> bool {
+        let entity = self.get_entity();
+        !entity.is_sneaking()
+            && entity.riding_cooldown.load(Ordering::Relaxed) <= 0
+            && self.get_mob().is_none_or(|mob| mob.mob_can_ride(vehicle))
+    }
+
     fn is_vehicle(&self) -> bool {
         self.get_entity().has_passengers()
     }
@@ -5623,6 +5630,20 @@ impl Entity {
         reason = "callers pass owned Arc for vehicle and passenger"
     )]
     pub fn add_passenger(&self, vehicle: Arc<dyn EntityBase>, passenger: Arc<dyn EntityBase>) {
+        self.add_passenger_if(&vehicle, &passenger, |_, _| true);
+    }
+
+    /// Checks eligibility against the current rider and seat state after mount callbacks.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "keeps the mount commit and its notifications together"
+    )]
+    pub(crate) fn add_passenger_if(
+        &self,
+        vehicle: &Arc<dyn EntityBase>,
+        passenger: &Arc<dyn EntityBase>,
+        can_attach: impl FnOnce(bool, &[Arc<dyn EntityBase>]) -> bool,
+    ) -> bool {
         let mut mount_event =
             crate::plugin::api::events::entity::entity_mount::EntityMountEvent::new(
                 passenger.get_entity().entity_id,
@@ -5642,19 +5663,31 @@ impl Entity {
                 .fire_blocking(&server, &mut vehicle_enter);
         }
         if mount_event.cancelled || vehicle_enter.cancelled {
-            return;
+            return false;
         }
 
         let passenger_entity = passenger.get_entity();
-        *passenger_entity
-            .vehicle
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::downgrade(&vehicle));
-
         let mut passengers = self
             .passengers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        {
+            // Dismount takes these locks in the same order.
+            let mut rider_vehicle = passenger_entity
+                .vehicle
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !can_attach(
+                rider_vehicle
+                    .as_ref()
+                    .is_some_and(|rider| rider.strong_count() > 0),
+                &passengers,
+            ) {
+                return false;
+            }
+            *rider_vehicle = Some(Arc::downgrade(vehicle));
+        }
 
         if let Some(player) = passenger.get_player() {
             let other_passenger_type = passengers
@@ -5694,16 +5727,31 @@ impl Entity {
             entity_data_key::FLAGS,
             MetadataValue::Int64(passenger_entity.bedrock_flags.load(Ordering::Relaxed)),
         );
-        passenger_entity.send_bedrock_actor_data(&rider_meta);
-
-        passengers.push(passenger);
-        let link_type = if passengers.len() == 1 { 1 } else { 2 };
+        let displaced_driver = passengers
+            .first()
+            .filter(|rider| {
+                self.entity_type.boat.is_some()
+                    && passenger.get_player().is_some()
+                    && rider.get_player().is_none()
+            })
+            .map(|rider| rider.get_entity().entity_id);
+        if displaced_driver.is_some() {
+            passengers.insert(0, passenger.clone());
+        } else {
+            passengers.push(passenger.clone());
+        }
+        let link_type = if passengers.len() == 1 || displaced_driver.is_some() {
+            1
+        } else {
+            2
+        };
 
         let passenger_ids: Vec<VarInt> = passengers
             .iter()
             .map(|p| VarInt(p.get_entity().entity_id))
             .collect();
         drop(passengers);
+        passenger_entity.send_bedrock_actor_data(&rider_meta);
 
         let be_link = pumpkin_protocol::bedrock::client::CSetActorLink {
             link: pumpkin_protocol::bedrock::client::common::ActorLink {
@@ -5718,11 +5766,25 @@ impl Entity {
 
         let world = self.world.load();
         let chunk_pos = self.chunk_pos.load();
+        if let Some(rider_id) = displaced_driver {
+            world.broadcast_to_chunk_bedrock(
+                chunk_pos,
+                &pumpkin_protocol::bedrock::client::CSetActorLink {
+                    link: pumpkin_protocol::bedrock::client::common::ActorLink {
+                        rider_unique_id: VarLong(i64::from(rider_id)),
+                        link_type: 2,
+                        rider_initiated: false,
+                        ..be_link.link
+                    },
+                },
+            );
+        }
         world.broadcast_to_chunk_editioned(
             chunk_pos,
             &CSetPassengers::new(VarInt(self.entity_id), &passenger_ids),
             &be_link,
         );
+        true
     }
 
     #[expect(

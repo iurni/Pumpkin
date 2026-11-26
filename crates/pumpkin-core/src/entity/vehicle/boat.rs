@@ -5,25 +5,35 @@ use crossbeam::atomic::AtomicCell;
 
 use crate::entity::player::Player;
 use crate::entity::vehicle::minecart::container::{self, MinecartInventory};
-use crate::entity::{Entity, EntityBase, living::LivingEntity};
+use crate::entity::{
+    Entity, EntityBase,
+    living::{LivingEntity, is_allowed_by_team_rules},
+};
 use crate::server::Server;
+use crate::world::World;
 use crate::world::game_event::GameEventContext;
 
 use pumpkin_data::damage::DamageType;
 use pumpkin_data::data_component_impl::CustomNameImpl;
-use pumpkin_data::entity::EntityType;
+use pumpkin_data::entity::{EntityPose, EntityType};
+use pumpkin_data::fluid::Fluid;
 use pumpkin_data::game_event::GameEvent;
 use pumpkin_data::item::Item;
 use pumpkin_data::item_stack::ItemStack;
-use pumpkin_data::translation;
+use pumpkin_data::tag::{self, Taggable};
+use pumpkin_data::{BlockDirection, translation};
 use pumpkin_inventory::Inventory;
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_protocol::java::client::play::Metadata;
 use pumpkin_util::GameMode;
+use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector3::Vector3;
 use pumpkin_util::text::TextComponent;
 
 use crate::entity::vehicle::vehicle::VehicleEntity;
+
+pub(crate) const PICKUP_RANGE: f64 = 0.2f32 as f64;
+const PICKUP_Y_INSET: f64 = 0.01f32 as f64;
 
 const FRONT_SEAT_OFFSET: f32 = 0.2;
 const BACK_SEAT_OFFSET: f32 = -0.6;
@@ -72,6 +82,41 @@ impl BoatEntity {
         if self.inventory.is_some() { 1 } else { 2 }
     }
 
+    fn can_pick_up_passenger(&self, passengers: &[Arc<dyn EntityBase>]) -> bool {
+        passengers.len() < self.max_passengers()
+            && passengers
+                .first()
+                .is_none_or(|rider| rider.get_player().is_none())
+    }
+
+    fn pickup_is_submerged(entity: &Entity, world: &World) -> bool {
+        let pos = entity.pos.load();
+        let eye_y = pos.y + entity.get_eye_height();
+        let fluid_box = entity.bounding_box.load().contract_all(0.001);
+        // A source can fill to a sturdy ceiling, including an exact eye boundary.
+        let min_y = (eye_y - 1.0).ceil().max(fluid_box.min.y.floor()) as i32;
+        let max_y = eye_y.floor().min(fluid_box.max.y.ceil() - 1.0) as i32;
+        (min_y..=max_y).any(|y| {
+            let block = BlockPos::floored(pos.x, f64::from(y), pos.z);
+            let (fluid, state) = world.get_fluid_and_fluid_state(&block);
+            if !fluid.matches_type(&Fluid::WATER) {
+                return false;
+            }
+            let height = world.get_fluid_height(&block, fluid, &state);
+            let camera_height = if state.is_source
+                && world
+                    .get_block_state(&block.up())
+                    .is_side_solid(BlockDirection::Down)
+            {
+                1.0
+            } else {
+                height
+            };
+            f64::from(y) + f64::from(height) >= fluid_box.min.y
+                && eye_y <= f64::from(y) + f64::from(camera_height)
+        })
+    }
+
     pub fn open_custom_inventory_screen(&self, player: &Arc<Player>) -> bool {
         let Some(inventory) = &self.inventory else {
             return false;
@@ -116,6 +161,89 @@ impl BoatEntity {
 
     fn send_wobble_metadata(&self) {
         self.vehicle.send_wobble_metadata();
+    }
+
+    fn pick_up_nearby_mobs(&self) {
+        let entity = self.get_entity();
+        let world = entity.world.load_full();
+        let position = entity.pos.load();
+        let bounds = entity
+            .bounding_box
+            .load()
+            .expand(PICKUP_RANGE, -PICKUP_Y_INSET, PICKUP_RANGE);
+        let is_pickup_open = || {
+            entity.is_alive()
+                && entity.pos.load() == position
+                && Arc::ptr_eq(&world, &entity.world.load())
+                && !Self::pickup_is_submerged(entity, &world)
+        };
+        let has_seat = || {
+            self.can_pick_up_passenger(
+                &entity
+                    .passengers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            )
+        };
+        if !has_seat() || !is_pickup_open() {
+            return;
+        }
+
+        let Some(vehicle) = world.get_entity_by_id(entity.entity_id) else {
+            return;
+        };
+        let own_team = self.get_team();
+        for other in world.get_entities_at_box(&bounds) {
+            if !has_seat() || !is_pickup_open() {
+                break;
+            }
+
+            let passenger = other.get_entity();
+            let can_board = || {
+                passenger.is_alive()
+                    && Arc::ptr_eq(&world, &passenger.world.load())
+                    && bounds.intersects(&passenger.bounding_box.load())
+                    && other.is_pushable()
+                    && passenger.width() < entity.width()
+                    && is_allowed_by_team_rules(own_team.as_ref(), other.get_team().as_ref())
+            };
+            if other.get_living_entity().is_none()
+                || other.is_spectator()
+                || passenger
+                    .entity_type
+                    .has_tag(&tag::EntityType::MINECRAFT_CANNOT_BE_PUSHED_ONTO_BOATS)
+                || other.is_passenger()
+                || self.is_passenger_of_same_vehicle(other.as_ref())
+                || !can_board()
+            {
+                continue;
+            }
+            if let Some(mob) = other.get_mob() {
+                mob.on_start_riding();
+            }
+            if other.can_ride(self)
+                && entity.add_passenger_if(&vehicle, &other, |already_riding, riders| {
+                    !already_riding
+                        && self.can_pick_up_passenger(riders)
+                        && is_pickup_open()
+                        && can_board()
+                        && other.can_ride(self)
+                })
+                && entity.has_passenger(passenger.entity_id)
+            {
+                passenger.set_pose(EntityPose::Standing);
+                world.emit_game_event_with_context(
+                    GameEvent::EntityMount.name(),
+                    position,
+                    &GameEventContext {
+                        source_entity: Some(other.as_ref()),
+                    },
+                );
+                if other.get_mob().is_some() && passenger.is_leashed() {
+                    passenger.drop_leash();
+                }
+            }
+        }
     }
 }
 
@@ -210,6 +338,8 @@ impl EntityBase for BoatEntity {
         } else if underwater > 0.0 {
             self.ticks_underwater.store((underwater - 1.0).max(0.0));
         }
+
+        self.pick_up_nearby_mobs();
     }
 
     fn init_data_tracker(&self) {
@@ -303,9 +433,15 @@ impl EntityBase for BoatEntity {
             return false;
         };
 
-        self.vehicle
-            .entity
-            .add_passenger(vehicle, passenger as Arc<dyn EntityBase>);
+        self.vehicle.entity.add_passenger_if(
+            &vehicle,
+            &(passenger as Arc<dyn EntityBase>),
+            |already_riding, riders| {
+                !already_riding
+                    && riders.len() < self.max_passengers()
+                    && self.get_entity().is_alive()
+            },
+        );
 
         true
     }
