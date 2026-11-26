@@ -9799,9 +9799,13 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn transfer_event_can_cancel_or_redirect_a_packet()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn java_test_player(
+        directory: &tempfile::TempDir,
+        name: &str,
+    ) -> Result<
+        (Arc<Server>, Arc<super::Player>, tokio::io::DuplexStream),
+        Box<dyn std::error::Error>,
+    > {
         use super::Player;
         use crate::{
             data::VanillaData,
@@ -9809,23 +9813,12 @@ mod tests {
                 ClientPlatform, GameProfile, PacketRateLimiter, PlayerConfig,
                 java::{JavaClient, pending::PendingConnection},
             },
-            plugin::EventPriority,
         };
         use arc_swap::ArcSwap;
         use pumpkin_config::{AdvancedConfiguration, BasicConfiguration, TelemetryConfig};
-        use pumpkin_data::packet::CURRENT_MC_VERSION;
-        use pumpkin_protocol::{
-            ConnectionState,
-            java::{
-                client::play::{CKeepAlive, CTransfer},
-                packet_decoder::TCPNetworkDecoder,
-            },
-            packet::MultiVersionJavaPacket,
-        };
+        use pumpkin_protocol::ConnectionState;
         use pumpkin_util::GameMode;
-        use std::time::Duration;
 
-        let directory = tempfile::tempdir()?;
         let basic = BasicConfiguration {
             default_level_name: directory
                 .path()
@@ -9859,7 +9852,7 @@ mod tests {
         );
         let profile = GameProfile {
             id: Uuid::new_v4(),
-            name: "TransferTest".into(),
+            name: name.into(),
             properties: ArcSwap::from_pointee(vec![]),
             profile_actions: None,
         };
@@ -9874,6 +9867,25 @@ mod tests {
             &world,
             GameMode::Survival,
         ));
+        Ok((server, player, peer))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn transfer_event_can_cancel_or_redirect_a_packet()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::plugin::EventPriority;
+        use pumpkin_data::packet::CURRENT_MC_VERSION;
+        use pumpkin_protocol::{
+            java::{
+                client::play::{CKeepAlive, CTransfer},
+                packet_decoder::TCPNetworkDecoder,
+            },
+            packet::MultiVersionJavaPacket,
+        };
+        use std::time::Duration;
+
+        let directory = tempfile::tempdir()?;
+        let (server, player, peer) = java_test_player(&directory, "TransferTest").await?;
         server
             .plugin_manager
             .register(Arc::new(TransferHandler), EventPriority::Normal, true);
@@ -9893,6 +9905,65 @@ mod tests {
         assert_eq!(packet.payload.as_ref(), b"\x09localhost\xde\xc7\x01");
         assert_eq!(player.transfer("closed.example", 25565), None);
         client.await_tasks().await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn melee_on_ender_dragon_parts_damages_the_dragon_without_disconnecting()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::entity::{Entity, EntityBase, boss::ender_dragon::EnderDragonEntity};
+        use pumpkin_data::{attributes::Attributes, entity::EntityType};
+        use pumpkin_protocol::{codec::var_int::VarInt, java::server::play::SAttack};
+        use pumpkin_util::math::vector3::Vector3;
+        use std::sync::atomic::Ordering;
+
+        let directory = tempfile::tempdir()?;
+        let (server, player, _peer) = java_test_player(&directory, "DragonMeleeTest").await?;
+        let world = player.world();
+        let client = player.client.java().ok_or("No Java client")?;
+        player.set_client_loaded(true);
+        player
+            .living_entity
+            .set_attribute_base(&Attributes::ATTACK_DAMAGE, 8.0);
+
+        for (offset, x, expected_damage) in [(1, 8.0, 8.0), (3, 24.0, 3.0)] {
+            let position = Vector3::new(x, 80.0, 8.0);
+            let dragon = EnderDragonEntity::new(Entity::new(
+                world.clone(),
+                position,
+                &EntityType::ENDER_DRAGON,
+            ));
+            world.add_entity_silent(dragon.clone());
+            let living = &dragon.mob_entity.living_entity;
+            let part_id = dragon.get_entity().entity_id + offset;
+            assert!(world.get_entity_by_id(part_id).is_none());
+            let before = living.health.load();
+            player
+                .get_entity()
+                .set_pos(position + Vector3::new(0.0, 0.0, 2.0));
+            player.last_attacked_ticks.store(20, Ordering::Relaxed);
+            client.handle_attack(
+                &player,
+                &SAttack {
+                    entity_id: VarInt(part_id),
+                },
+                &server,
+            );
+            assert!(
+                !client.is_closed(),
+                "hitting part {offset} disconnected the player"
+            );
+            assert!(
+                (before - living.health.load() - expected_damage).abs() < 0.001,
+                "hitting part {offset} did not apply {expected_damage} damage"
+            );
+            world.remove_entity(dragon.as_ref());
+            assert!(world.get_entity_or_dragon_part(part_id).is_none());
+        }
+
+        client.close();
+        client.await_tasks().await;
+        world.level.shutdown().await;
         Ok(())
     }
 

@@ -1,11 +1,16 @@
 use pumpkin_data::damage::DamageType;
 use pumpkin_data::entity::EntityType;
+use pumpkin_data::tag::{self, Taggable};
 use pumpkin_data::{Block, BlockStateId};
+use pumpkin_nbt::compound::NbtCompound;
+use pumpkin_protocol::codec::var_int::VarInt;
+use pumpkin_util::GameMode;
+use pumpkin_util::math::boundingbox::EntityDimensions;
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector3::Vector3;
 use pumpkin_world::{chunk::ChunkHeightmapType, world::BlockFlags};
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use crate::entity::{
     Entity, EntityBase,
@@ -28,7 +33,16 @@ const GROWL_COOLDOWN_BASE: i32 = 200;
 const FLAP_SPEED: f32 = 0.2;
 pub const FLY_ACCEL: f64 = 0.1;
 pub const FLY_SPEED: f64 = 0.6;
-const ARENA_RADIUS: f64 = 192.0;
+const DRAGON_PART_DIMENSIONS: [(f32, f32); 8] = [
+    (1.0, 1.0), // Head
+    (3.0, 3.0), // Neck
+    (5.0, 3.0), // Body
+    (2.0, 2.0), // Tail
+    (2.0, 2.0),
+    (2.0, 2.0),
+    (4.0, 2.0), // Wings
+    (4.0, 2.0),
+];
 
 const NODE_ADJACENCY: [u32; NODE_COUNT] = [
     6146, 8197, 8202, 16404, 32808, 32848, 65696, 131392, 131712, 263424, 526848, 525313, 1581057,
@@ -92,10 +106,10 @@ pub fn find_path(
     nodes: &[Option<DragonNode>; NODE_COUNT],
     from: usize,
     to: usize,
-    final_node: Option<DragonNode>,
+    first_node: usize,
 ) -> Vec<usize> {
-    if from == to && final_node.is_none() {
-        return vec![];
+    if from == to {
+        return Vec::new();
     }
 
     let mut g = [f64::MAX; NODE_COUNT];
@@ -105,11 +119,6 @@ pub fn find_path(
         std::collections::BinaryHeap::new();
 
     let h = |n: usize| -> f64 {
-        if let Some(target) = final_node
-            && let Some(node) = nodes[n]
-        {
-            return node.dist_sq(&target).sqrt();
-        }
         match (nodes[n], nodes[to]) {
             (Some(a), Some(b)) => a.dist_sq(&b).sqrt(),
             _ => 0.0,
@@ -118,18 +127,23 @@ pub fn find_path(
 
     g[from] = 0.0;
     open.push((OrderedFloat(-h(from)), from));
+    let mut closest = from;
 
-    'outer: while let Some((_, cur)) = open.pop() {
+    while let Some((_, cur)) = open.pop() {
         if closed[cur] {
             continue;
         }
         if cur == to {
-            break 'outer;
+            closest = cur;
+            break;
+        }
+        if h(cur) < h(closest) {
+            closest = cur;
         }
         closed[cur] = true;
 
         let adj = NODE_ADJACENCY[cur];
-        for nbr in 0..NODE_COUNT {
+        for nbr in first_node..NODE_COUNT {
             if (adj >> nbr) & 1 == 0 || closed[nbr] {
                 continue;
             }
@@ -146,7 +160,7 @@ pub fn find_path(
     }
 
     let mut path = Vec::new();
-    let mut cur = to;
+    let mut cur = closest;
     while cur != NODE_COUNT {
         path.push(cur);
         cur = came_from[cur];
@@ -161,13 +175,29 @@ pub fn find_path(
 pub struct EnderDragonPart {
     pub entity: Entity,
     pub dragon_uuid: uuid::Uuid,
+    dragon_id: i32,
+    takes_full_damage: bool,
 }
 
 impl EnderDragonPart {
-    pub const fn new(entity: Entity, dragon_uuid: uuid::Uuid) -> Self {
+    fn new(
+        entity: Entity,
+        dragon_uuid: uuid::Uuid,
+        dragon_id: i32,
+        takes_full_damage: bool,
+        dimensions: EntityDimensions,
+    ) -> Self {
+        entity.entity_dimension.store(dimensions);
+        entity.bounding_box.store(Entity::make_bounding_box(
+            entity.entity_type,
+            entity.pos.load(),
+            &dimensions,
+        ));
         Self {
             entity,
             dragon_uuid,
+            dragon_id,
+            takes_full_damage,
         }
     }
 }
@@ -177,17 +207,66 @@ impl EntityBase for EnderDragonPart {
         &self.entity
     }
 
-    fn damage(&self, source: &dyn EntityBase, amount: f32, damage_type: DamageType) -> bool {
-        let world = self.entity.world.load();
-        if let Some(dragon_base) = world
-            .entities
-            .load()
-            .iter()
-            .find(|e| e.get_entity().entity_uuid == self.dragon_uuid)
+    fn damage_with_context(
+        &self,
+        _caller: &dyn EntityBase,
+        amount: f32,
+        damage_type: DamageType,
+        position: Option<Vector3<f64>>,
+        source: Option<&dyn EntityBase>,
+        cause: Option<&dyn EntityBase>,
+    ) -> bool {
+        let attacker = cause.or(source);
+        let world = attacker.map_or_else(
+            || self.entity.world.load_full(),
+            |attacker| attacker.get_entity().world.load_full(),
+        );
+        let Some(parent) = world.get_entity_by_id(self.dragon_id) else {
+            return false;
+        };
+        let Some(dragon) = parent.cast_any().downcast_ref::<EnderDragonEntity>() else {
+            return false;
+        };
+        let living = &dragon.mob_entity.living_entity;
+        if self.entity.is_removed()
+            || living.entity.is_removed()
+            || !Arc::ptr_eq(&world, &living.entity.world.load())
+            || !dragon
+                .parts
+                .iter()
+                .any(|part| std::ptr::eq(part.as_ref(), self))
+            || *dragon
+                .phase
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                == EnderDragonPhase::Dying
         {
-            return dragon_base.damage(source, amount, damage_type);
+            return false;
         }
-        false
+        let amount = if self.takes_full_damage {
+            amount
+        } else {
+            amount / 4.0 + amount.min(1.0)
+        };
+        if amount < 0.01
+            || (attacker.and_then(EntityBase::get_player).is_none()
+                && !damage_type.has_tag(&tag::DamageType::MINECRAFT_ALWAYS_HURTS_ENDER_DRAGONS))
+        {
+            return false;
+        }
+        let health_before = living.health.load();
+        let applied = parent.damage_with_context(
+            parent.as_ref(),
+            amount,
+            damage_type,
+            position,
+            source,
+            cause,
+        );
+        if applied {
+            dragon.hurt((health_before - living.health.load()).max(0.0));
+        }
+        applied
     }
 
     fn cast_any(&self) -> &dyn std::any::Any {
@@ -228,37 +307,44 @@ pub struct EnderDragonEntity {
 
     pub nodes: Mutex<[Option<DragonNode>; NODE_COUNT]>,
     pub path: Mutex<Vec<usize>>,
-    pub target_node: Mutex<usize>,
 
     pub strafe_target: Mutex<Option<Vector3<f64>>>,
     pub target_player: Mutex<Option<uuid::Uuid>>,
     pub ticks_sitting: Mutex<i32>,
     pub sit_attack_timer: Mutex<i32>,
     pub breathing_timer: Mutex<i32>,
+    pub(super) flame_count: Mutex<i32>,
+    pub(super) breathing_cloud: Mutex<Option<Weak<dyn EntityBase>>>,
+    pub(super) charging_target: Mutex<Option<Vector3<f64>>>,
 }
 
 impl EnderDragonEntity {
+    pub(crate) const PART_COUNT: i32 = DRAGON_PART_DIMENSIONS.len() as i32;
+
     pub fn new(entity: Entity) -> Arc<Self> {
         entity.no_physics.store(true, Ordering::Relaxed);
         let base_id = entity.entity_id;
-        let dragon_uuid = entity.entity_uuid;
         let world = entity.world.load();
 
-        let _ = Entity::reserve_ids(8);
-
-        let mut parts = Vec::new();
-        for i in 1..=8 {
-            let part_entity = Entity::from_uuid_with_id(
-                base_id + i,
-                uuid::Uuid::new_v4(),
-                world.clone(),
-                entity.pos.load(),
-                &EntityType::ENDER_DRAGON,
-            );
-            let part = Arc::new(EnderDragonPart::new(part_entity, dragon_uuid));
-            // TODO: world.add_entity_silent(part.clone() as Arc<dyn EntityBase>);
-            parts.push(part);
-        }
+        let parts = (1..=Self::PART_COUNT)
+            .zip(DRAGON_PART_DIMENSIONS)
+            .map(|(offset, (width, height))| {
+                let part = Entity::from_uuid_with_id(
+                    base_id.wrapping_add(offset),
+                    uuid::Uuid::new_v4(),
+                    world.clone(),
+                    entity.pos.load(),
+                    &EntityType::ENDER_DRAGON,
+                );
+                Arc::new(EnderDragonPart::new(
+                    part,
+                    entity.entity_uuid,
+                    base_id,
+                    offset <= 2,
+                    EntityDimensions::new(width, height, 0.0),
+                ))
+            })
+            .collect();
 
         Arc::new(Self {
             mob_entity: MobEntity::new(entity),
@@ -280,12 +366,14 @@ impl EnderDragonEntity {
             fireball_charge: Mutex::new(0),
             nodes: Mutex::new([None; NODE_COUNT]),
             path: Mutex::new(Vec::new()),
-            target_node: Mutex::new(0),
             strafe_target: Mutex::new(None),
             target_player: Mutex::new(None),
             ticks_sitting: Mutex::new(0),
             sit_attack_timer: Mutex::new(0),
             breathing_timer: Mutex::new(0),
+            flame_count: Mutex::new(0),
+            breathing_cloud: Mutex::new(None),
+            charging_target: Mutex::new(None),
         })
     }
 
@@ -313,9 +401,168 @@ impl EnderDragonEntity {
         old_phase.end(self);
 
         *phase_lock = phase_type;
+        self.sync_phase(phase_type);
 
         let new_phase = self.phase_manager.get_phase(phase_type);
         new_phase.begin(self);
+    }
+
+    fn sync_phase(&self, phase: EnderDragonPhase) {
+        self.mob_entity.living_entity.entity.set_synced_data(
+            pumpkin_data::tracked_data::ender_dragon::DATA_PHASE,
+            VarInt(phase.network_id()),
+        );
+    }
+
+    pub(super) fn current_phase(&self) -> EnderDragonPhase {
+        *self
+            .phase
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn podium_position(&self) -> Vector3<f64> {
+        let origin = self.fight_origin_pos();
+        let world = self.mob_entity.living_entity.entity.world.load();
+        let top = world.get_heightmap_height(
+            ChunkHeightmapType::MotionBlockingNoLeaves,
+            origin.0.x,
+            origin.0.z,
+        );
+        Vector3::new(
+            f64::from(origin.0.x) + 0.5,
+            f64::from(top + 1),
+            f64::from(origin.0.z) + 0.5,
+        )
+    }
+
+    fn fight_origin_pos(&self) -> BlockPos {
+        *self
+            .fight_origin
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn alive_crystals(&self) -> Option<i32> {
+        let entity = &self.mob_entity.living_entity.entity;
+        let world = entity.world.load();
+        world.dragon_fight.as_ref().and_then(|fight| {
+            let fight = fight
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (fight.dragon_uuid() == Some(entity.entity_uuid)).then(|| fight.alive_crystals())
+        })
+    }
+
+    fn first_flight_node(&self) -> usize {
+        if self.alive_crystals().unwrap_or(0) > 0 {
+            0
+        } else {
+            12
+        }
+    }
+
+    fn set_target_location(&self, target: Option<Vector3<f64>>) {
+        *self
+            .target_location
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = target;
+    }
+
+    fn reset_flight_path(&self) {
+        self.path
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        self.set_target_location(None);
+    }
+
+    fn flight_target_reached(&self) -> bool {
+        let entity = &self.mob_entity.living_entity.entity;
+        let current = entity.pos.load();
+        let target = *self
+            .target_location
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        target.is_none_or(|target| !(100.0..=22500.0).contains(&current.distance_squared(target)))
+            || entity.horizontal_collision.load(Ordering::Relaxed)
+            || entity.vertical_collision.load(Ordering::Relaxed)
+    }
+
+    fn plan_flight_path(&self, from: usize, to: usize) {
+        let first_node = self.first_flight_node();
+        let path = find_path(
+            &self
+                .nodes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            from,
+            to,
+            first_node,
+        );
+        *self
+            .path
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = path;
+    }
+
+    fn follow_next_flight_node(&self, fallback: Option<usize>) -> bool {
+        let next = {
+            let mut path = self
+                .path
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if path.is_empty() {
+                fallback
+            } else {
+                Some(path.remove(0))
+            }
+        };
+        let node = next.and_then(|idx| {
+            self.nodes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)[idx]
+        });
+        if let Some(node) = node {
+            let target = node.as_vec3() + Vector3::new(0.0, rand::random_range(0.0..20.0), 0.0);
+            self.set_target_location(Some(target));
+        }
+        node.is_some()
+    }
+
+    fn nearest_combat_player(
+        &self,
+        position: Vector3<f64>,
+        radius: f64,
+        max_vertical_difference: f64,
+        require_line_of_sight: bool,
+    ) -> Option<Arc<Player>> {
+        let entity = &self.mob_entity.living_entity.entity;
+        let world = entity.world.load();
+        world
+            .players
+            .load()
+            .iter()
+            .filter(|player| {
+                let target = player.get_entity();
+                let target_pos = target.pos.load();
+                player.living_entity.is_alive()
+                    && !matches!(
+                        player.gamemode.load(),
+                        GameMode::Creative | GameMode::Spectator
+                    )
+                    && target_pos.distance_squared(position) <= radius * radius
+                    && (target_pos.y - position.y).abs() <= max_vertical_difference
+                    && (!require_line_of_sight || entity.has_line_of_sight(target))
+            })
+            .min_by(|a, b| {
+                a.get_entity()
+                    .pos
+                    .load()
+                    .distance_squared(position)
+                    .total_cmp(&b.get_entity().pos.load().distance_squared(position))
+            })
+            .cloned()
     }
 
     fn ensure_nodes_initialized(&self) {
@@ -344,44 +591,37 @@ impl EnderDragonEntity {
 
             if i < 12 {
                 node_x = fight_origin.0.x
-                    + (60.0 * ((i as f32) * std::f32::consts::TAU / 12.0).cos()) as i32;
+                    + (60.0 * ((i as f32) * std::f32::consts::TAU / 12.0).cos()).floor() as i32;
                 node_z = fight_origin.0.z
-                    + (60.0 * ((i as f32) * std::f32::consts::TAU / 12.0).sin()) as i32;
+                    + (60.0 * ((i as f32) * std::f32::consts::TAU / 12.0).sin()).floor() as i32;
             } else if i < 20 {
                 let multiplier = i - 12;
                 node_x = fight_origin.0.x
-                    + (40.0 * ((multiplier as f32) * std::f32::consts::TAU / 8.0).cos()) as i32;
+                    + (40.0 * ((multiplier as f32) * std::f32::consts::TAU / 8.0).cos()).floor()
+                        as i32;
                 node_z = fight_origin.0.z
-                    + (40.0 * ((multiplier as f32) * std::f32::consts::TAU / 8.0).sin()) as i32;
+                    + (40.0 * ((multiplier as f32) * std::f32::consts::TAU / 8.0).sin()).floor()
+                        as i32;
                 y_adjustment += 10;
             } else {
                 let multiplier = i - 20;
                 node_x = fight_origin.0.x
-                    + (20.0 * ((multiplier as f32) * std::f32::consts::TAU / 4.0).cos()) as i32;
+                    + (20.0 * ((multiplier as f32) * std::f32::consts::TAU / 4.0).cos()).floor()
+                        as i32;
                 node_z = fight_origin.0.z
-                    + (20.0 * ((multiplier as f32) * std::f32::consts::TAU / 4.0).sin()) as i32;
+                    + (20.0 * ((multiplier as f32) * std::f32::consts::TAU / 4.0).sin()).floor()
+                        as i32;
             }
 
-            let height =
-                world.get_heightmap_height(ChunkHeightmapType::MotionBlocking, node_x, node_z);
-            let node_y = 73.max(height + y_adjustment);
+            let height = world.get_heightmap_height(
+                ChunkHeightmapType::MotionBlockingNoLeaves,
+                node_x,
+                node_z,
+            );
+            let node_y = 73.max(height + 1 + y_adjustment);
             nodes[i] = Some(DragonNode::new(node_x as f64, node_y as f64, node_z as f64));
         }
 
-        let pos = self.mob_entity.living_entity.entity.pos.load();
-        let nearest = Self::nearest_node_in(&nodes, pos);
-        let dest = Self::random_node_idx();
-        let new_path = find_path(&nodes, nearest, dest, None);
-        drop(nodes);
-
-        *self
-            .target_node
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = dest;
-        *self
-            .path
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = new_path;
         *initialized = true;
     }
 
@@ -392,24 +632,18 @@ impl EnderDragonEntity {
 
     pub fn find_closest_node_to(&self, pos: Vector3<f64>) -> usize {
         self.ensure_nodes_initialized();
+        let first = self.first_flight_node();
         let nodes = self
             .nodes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Self::nearest_node_in(&nodes, pos)
-    }
-
-    fn nearest_node_in(nodes: &[Option<DragonNode>; NODE_COUNT], pos: Vector3<f64>) -> usize {
         nodes
             .iter()
             .enumerate()
+            .skip(first)
             .filter_map(|(i, n)| n.map(|n| (i, n.dist_sq_vec(pos))))
             .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map_or(0, |(i, _)| i)
-    }
-
-    fn random_node_idx() -> usize {
-        rand::random_range(0..NODE_COUNT)
+            .map_or(first, |(i, _)| i)
     }
 
     #[inline]
@@ -511,6 +745,18 @@ impl EnderDragonEntity {
         );
 
         let actual_vel = entity.velocity.load();
+        if self.current_phase() != EnderDragonPhase::Dying {
+            let inside_wall = *self
+                .in_wall
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let movement = if inside_wall {
+                actual_vel * 0.8
+            } else {
+                actual_vel
+            };
+            entity.move_entity(self, movement);
+        }
         let actual_dir = if actual_vel.length_squared() > 1e-6 {
             actual_vel.normalize()
         } else {
@@ -574,27 +820,6 @@ impl EnderDragonEntity {
         } else {
             *t = GROWL_COOLDOWN_BASE + rand::random_range(0..100);
         }
-    }
-
-    fn find_nearest_player(&self) -> Option<Arc<Player>> {
-        let world = self.mob_entity.living_entity.entity.world.load();
-        let pos = self.mob_entity.living_entity.entity.pos.load();
-        world
-            .players
-            .load()
-            .iter()
-            .filter(|p| {
-                let p_pos = p.living_entity.entity.pos.load();
-                p_pos.distance_squared(pos) < ARENA_RADIUS * ARENA_RADIUS
-            })
-            .min_by(|a, b| {
-                let a_pos = a.living_entity.entity.pos.load();
-                let b_pos = b.living_entity.entity.pos.load();
-                a_pos
-                    .distance_squared(pos)
-                    .total_cmp(&b_pos.distance_squared(pos))
-            })
-            .cloned()
     }
 
     fn handle_player_collisions(&self) {
@@ -782,6 +1007,10 @@ impl EnderDragonEntity {
             return;
         }
         self.mob_entity.living_entity.entity.update_last_pos();
+        if self.mob_entity.is_no_ai() {
+            self.tick_parts();
+            return;
+        }
         self.ensure_nodes_initialized();
         self.update_flap_time();
 
@@ -814,52 +1043,56 @@ impl EnderDragonEntity {
             }
         }
 
-        let phase_type: EnderDragonPhase = *self
-            .phase
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let phase = self.phase_manager.get_phase(phase_type);
+        let mut phase_type = self.current_phase();
+        let mut phase = self.phase_manager.get_phase(phase_type);
 
-        if phase_type.is_sitting() {
-            *self
-                .ticks_sitting
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
-        } else {
+        if !phase_type.is_sitting() {
             self.handle_player_collisions();
             self.tick_block_breaking();
         }
 
         phase.tick(self);
+        let updated = self.current_phase();
+        if updated != phase_type {
+            phase_type = updated;
+            phase = self.phase_manager.get_phase(phase_type);
+            phase.tick(self);
+        }
 
         if self.mob_entity.living_entity.entity.is_removed() {
             return;
         }
 
-        if phase_type != EnderDragonPhase::Dying {
+        if !matches!(phase_type, EnderDragonPhase::Dying) && !self.current_phase().is_sitting() {
             let target_location = *self
                 .target_location
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(target) = target_location {
-                let pos = self.mob_entity.living_entity.entity.pos.load();
-                self.steer_toward(pos, target, phase.get_fly_speed(), phase.get_turn_speed());
+                let entity = &self.mob_entity.living_entity.entity;
+                let velocity = entity.velocity.load();
+                let turn_speed = phase.get_turn_speed(velocity.x.hypot(velocity.z) as f32);
+                self.steer_toward(entity.pos.load(), target, phase.get_fly_speed(), turn_speed);
             }
         }
 
+        let entity = &self.mob_entity.living_entity.entity;
+        entity.body_yaw.store(entity.yaw.load());
         self.tick_parts();
     }
 
     pub fn hurt(&self, damage: f32) {
-        let phase_type: EnderDragonPhase = *self
-            .phase
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if phase_type.is_sitting() {
-            *self
+        if self.current_phase().is_sitting() {
+            let mut accumulated = self
                 .sitting_damage_received
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) += damage;
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *accumulated += damage;
+            if *accumulated > self.mob_entity.living_entity.get_max_health() * 0.25 {
+                *accumulated = 0.0;
+                drop(accumulated);
+                self.set_phase(EnderDragonPhase::TakingOff);
+            }
         }
     }
 }
@@ -877,6 +1110,42 @@ impl Mob for EnderDragonEntity {
         self.ai_step();
     }
 
+    fn travel(&self, _caller: &dyn EntityBase) -> bool {
+        // Dragon flight applies its movement before drag; generic mob travel would move it twice.
+        self.current_phase() != EnderDragonPhase::Dying
+    }
+
+    fn has_global_tick_reach(&self) -> bool {
+        // Phase transitions may read the podium and path nodes across the whole arena.
+        true
+    }
+
+    fn mob_init_data_tracker(&self) {
+        self.sync_phase(self.current_phase());
+    }
+
+    fn mob_write_nbt(&self, nbt: &mut NbtCompound) {
+        nbt.put_int("DragonPhase", self.current_phase().network_id());
+        nbt.put_float(
+            "sitting_damage_received",
+            *self
+                .sitting_damage_received
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+    }
+
+    fn mob_read_nbt(&self, nbt: &NbtCompound) {
+        if let Some(phase) = nbt.get_int("DragonPhase") {
+            self.set_phase(EnderDragonPhase::from_network_id(phase));
+        }
+        *self
+            .sitting_damage_received
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            nbt.get_float("sitting_damage_received").unwrap_or(0.0);
+    }
+
     fn on_damage(&self, _damage_type: DamageType, _source: Option<&dyn EntityBase>) {
         let living = &self.mob_entity.living_entity;
         if living.health.load() <= 0.0 {
@@ -886,6 +1155,21 @@ impl Mob for EnderDragonEntity {
 
     fn get_mob_gravity(&self) -> f64 {
         0.0
+    }
+
+    fn mob_knockback(
+        &self,
+        _power: f64,
+        _x: f64,
+        _z: f64,
+        _source: Option<&Entity>,
+        _damage: f32,
+        _comes_from_effect: bool,
+    ) -> bool {
+        self.phase
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_sitting()
     }
 }
 

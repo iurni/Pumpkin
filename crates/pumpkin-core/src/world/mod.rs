@@ -4852,6 +4852,34 @@ impl World {
         None
     }
 
+    /// Resolves combat targets, including the hitboxes owned by a live dragon.
+    pub(crate) fn get_entity_or_dragon_part(&self, id: i32) -> Option<Arc<dyn EntityBase>> {
+        use crate::entity::boss::ender_dragon::EnderDragonEntity;
+
+        if let Some(entity) = self.get_entity_by_id(id) {
+            return Some(entity);
+        }
+
+        // Parts have no independent tracking or lifetime. Find a loaded parent
+        // through the existing index using the contiguous ID range it owns.
+        let entities = self.entities.load_full();
+        (1..=EnderDragonEntity::PART_COUNT).find_map(|offset| {
+            let parent = self
+                .entity_index
+                .by_id(&entities, id.checked_sub(offset)?)?;
+            let dragon = parent.cast_any().downcast_ref::<EnderDragonEntity>()?;
+            let parent_entity = dragon.get_entity();
+            if parent_entity.is_removed()
+                || !std::ptr::eq(self, parent_entity.world.load().as_ref())
+            {
+                return None;
+            }
+            let part = dragon.parts.get(usize::try_from(offset - 1).ok()?)?;
+            (!part.entity.is_removed() && part.entity.entity_id == id)
+                .then(|| part.clone() as Arc<dyn EntityBase>)
+        })
+    }
+
     /// Gets a `Player` by a username
     pub fn get_player_by_name(&self, name: &str) -> Option<Arc<Player>> {
         for player in self.players.load().iter() {

@@ -85,6 +85,7 @@ impl super::Phase for StrafingPhase {
                 drop(path);
                 let i = dragon.find_closest_node();
                 let j = dragon.find_closest_node_to(player_pos);
+                let first_node = dragon.first_flight_node();
 
                 let mut path_lock = dragon
                     .path
@@ -94,7 +95,7 @@ impl super::Phase for StrafingPhase {
                     .nodes
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                *path_lock = find_path(&nodes, i, j, None);
+                *path_lock = find_path(&nodes, i, j, first_node);
                 drop(nodes);
                 path = path_lock;
             }

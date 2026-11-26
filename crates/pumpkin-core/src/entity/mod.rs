@@ -1875,8 +1875,14 @@ impl Entity {
         position: Vector3<f64>,
         entity_type: &'static EntityType,
     ) -> Self {
+        // The Java client assigns each dragon part an ID immediately after its parent.
+        let count = if entity_type == &EntityType::ENDER_DRAGON {
+            1 + boss::ender_dragon::EnderDragonEntity::PART_COUNT
+        } else {
+            1
+        };
         Self::from_uuid_with_id(
-            CURRENT_ID.fetch_add(1, Relaxed),
+            Self::reserve_ids(count),
             entity_uuid,
             world,
             position,
