@@ -83,6 +83,23 @@ impl JavaClient {
         }}
     }
 
+    pub(super) fn prepare_block_item_consumption(
+        player: &Arc<Player>,
+        hand: Hand,
+        held: &mut ItemStack,
+        server: &Arc<Server>,
+    ) {
+        let mut event =
+            crate::plugin::api::events::player::player_item_consume::PlayerItemConsumeEvent::new(
+                player.clone(),
+                held.item.registry_key.to_string(),
+            );
+        server.plugin_manager.fire_blocking(server, &mut event);
+        if !event.cancelled {
+            Self::prepare_hand_item_for_use(player, hand, held);
+        }
+    }
+
     fn prepare_hand_item_for_use(player: &Arc<Player>, hand: Hand, held: &mut ItemStack) {
         let inventory = player.inventory();
 

@@ -158,6 +158,10 @@ impl JavaClient {
             if let Some(block) = Block::from_item_id(item_id) {
                 should_try_decrement =
                     Self::run_is_block_place(player, block, server, use_item_on, position, face)?;
+                if !should_try_decrement && item.get_data_component::<ConsumableImpl>().is_some() {
+                    // Vanilla BlockItem.useOn falls back to Item.use when placement fails.
+                    Self::prepare_block_item_consumption(player, hand, &mut item, server);
+                }
             }
         }
 
