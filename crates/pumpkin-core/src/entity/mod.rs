@@ -986,6 +986,17 @@ pub trait EntityBase: Send + Sync + std::any::Any {
         interact_with_shears(self, player, item_stack, hand)
     }
 
+    /// Position-specific interaction. `None` keeps the usual hand interaction path.
+    fn interact_at_with_hand(
+        &self,
+        _player: &Arc<Player>,
+        _item_stack: &mut ItemStack,
+        _hand: pumpkin_util::Hand,
+        _position: Vector3<f64>,
+    ) -> Option<bool> {
+        None
+    }
+
     fn set_on_fire_for(&self, seconds: f32) {
         let entity = self.get_entity();
         // Exclude fire-immune entities (ex. certain items) from burn damage

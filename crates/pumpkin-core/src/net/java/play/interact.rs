@@ -107,8 +107,14 @@ impl JavaClient {
                             };
                             let mut stack = player.inventory().get_stack_in_hand(hand);
                             let before = stack.clone();
-                            let native_interaction =
-                                event.target.interact_with_hand(player, &mut stack, hand);
+                            let native_interaction = if event.action == ActionType::InteractAt {
+                                interact.target_position.and_then(|position| {
+                                    event.target.interact_at_with_hand(player, &mut stack, hand, position)
+                                })
+                            } else {
+                                None
+                            }
+                            .or_else(|| event.target.interact_with_hand(player, &mut stack, hand));
                             let interacted = native_interaction
                                 .unwrap_or_else(|| event.target.interact(player, &mut stack));
                             let item_id = before.item.id;

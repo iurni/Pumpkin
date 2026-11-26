@@ -1,12 +1,14 @@
+use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, AtomicI64, AtomicU8, Ordering};
 
-use crate::entity::{Entity, EntityBase, living::LivingEntity};
+use crate::entity::{Entity, EntityBase, living::LivingEntity, player::Player};
 use crossbeam::atomic::AtomicCell;
 use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::{
     Block,
+    attributes::Attributes,
     damage::DamageType,
-    data_component_impl::{EquipmentSlot, EquipmentType},
+    data_component_impl::{EquipmentSlot, EquipmentType, EquippableImpl},
     entity::{EntityStatus, EntityType},
     item::Item,
     sound::{Sound, SoundCategory},
@@ -14,6 +16,7 @@ use pumpkin_data::{
 };
 use pumpkin_nbt::{compound::NbtCompound, tag::NbtTag};
 use pumpkin_protocol::bedrock::server::actor_event::ActorEventID;
+use pumpkin_util::Hand;
 use pumpkin_util::math::{
     boundingbox::EntityDimensions, euler_angle::EulerAngle, vector3::Vector3,
 };
@@ -172,14 +175,14 @@ impl ArmorStandEntity {
 
     pub fn is_slot_disabled(&self, slot: &EquipmentSlot) -> bool {
         let disabled_slots = self.disabled_slots.load(Ordering::Relaxed);
-        let slot_bit = 1 << slot.get_offset_entity_slot_id(0);
+        let slot_bit = 1 << slot.get_slot_index();
 
         (disabled_slots & slot_bit) != 0
             || (slot.slot_type() == EquipmentType::Hand && !self.should_show_arms())
     }
 
     pub fn set_slot_disabled(&self, slot: &EquipmentSlot, disabled: bool) {
-        let slot_bit = 1 << slot.get_offset_entity_slot_id(0);
+        let slot_bit = 1 << slot.get_slot_index();
         let current = self.disabled_slots.load(Ordering::Relaxed);
 
         let new_val = if disabled {
@@ -203,6 +206,126 @@ impl ArmorStandEntity {
         self.rotation.store(packed.to_owned());
     }
 
+    /// Selects an occupied slot under the hit point, following vanilla's order.
+    fn clicked_slot(&self, hit_y: f64) -> EquipmentSlot {
+        let small = self.is_small();
+        let scale = self.living_entity.get_attribute_value(&Attributes::SCALE)
+            * if small { 0.5 } else { 1.0 };
+        let y = hit_y / scale;
+        let equipment = self
+            .living_entity
+            .entity_equipment
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let has = |slot: &EquipmentSlot| !equipment.get(slot).is_empty();
+        if y >= 0.1 && y < 0.1 + if small { 0.8 } else { 0.45 } && has(&EquipmentSlot::FEET) {
+            EquipmentSlot::FEET
+        } else if y >= 0.9 + if small { 0.3 } else { 0.0 }
+            && y < 0.9 + if small { 1.0 } else { 0.7 }
+            && has(&EquipmentSlot::CHEST)
+        {
+            EquipmentSlot::CHEST
+        } else if y >= 0.4 && y < 0.4 + if small { 1.0 } else { 0.8 } && has(&EquipmentSlot::LEGS) {
+            EquipmentSlot::LEGS
+        } else if y >= 1.6 && has(&EquipmentSlot::HEAD) {
+            EquipmentSlot::HEAD
+        } else if !has(&EquipmentSlot::MAIN_HAND) && has(&EquipmentSlot::OFF_HAND) {
+            EquipmentSlot::OFF_HAND
+        } else {
+            EquipmentSlot::MAIN_HAND
+        }
+    }
+
+    fn interact_at(&self, player: &Arc<Player>, held: &mut ItemStack, hit: Vector3<f64>) -> bool {
+        if self.is_marker() || held.item == &Item::NAME_TAG || !hit.y.is_finite() {
+            return false;
+        }
+        let item_slot = held
+            .get_data_component::<EquippableImpl>()
+            .map(|equippable| equippable.slot)
+            .filter(|slot| self.can_use_slot(slot))
+            .unwrap_or(&EquipmentSlot::MAIN_HAND);
+        let slot = if held.is_empty() {
+            let clicked = self.clicked_slot(hit.y);
+            if self.is_slot_disabled(&clicked) {
+                item_slot.clone()
+            } else {
+                clicked
+            }
+        } else {
+            if self.is_slot_disabled(item_slot) {
+                return false;
+            }
+            item_slot.clone()
+        };
+
+        // Check before firing the event, then recheck under the lock afterward.
+        {
+            let equipment = self
+                .living_entity
+                .entity_equipment
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let old = equipment.get(&slot);
+            let disabled = self.disabled_slots.load(Ordering::Relaxed);
+            if self.get_entity().is_removed()
+                || (held.is_empty() && old.is_empty())
+                || (!old.is_empty() && disabled & (1 << (slot.get_slot_index() + 8)) != 0)
+                || (old.is_empty() && disabled & (1 << (slot.get_slot_index() + 16)) != 0)
+                || (held.item_count > 1 && !old.is_empty())
+            {
+                return false;
+            }
+        }
+
+        // Do not invoke plugin callbacks while holding the stand's inventory lock.
+        if let Some(server) = self.get_entity().world.load().server.upgrade() {
+            let mut event = crate::plugin::api::events::player::player_armor_stand_manipulate::PlayerArmorStandManipulateEvent {
+                player: player.clone(),
+                armor_stand_id: self.get_entity().entity_id,
+                slot: slot.get_slot_index() as u8,
+                cancelled: false,
+            };
+            server.plugin_manager.fire_blocking(&server, &mut event);
+            if event.cancelled {
+                return true;
+            }
+        }
+
+        let creative = player.is_creative();
+        let changed = {
+            let mut equipment = self
+                .living_entity
+                .entity_equipment
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let old = equipment.get(&slot);
+            let disabled = self.disabled_slots.load(Ordering::Relaxed);
+            if self.get_entity().is_removed()
+                || (held.is_empty() && old.is_empty())
+                || (!old.is_empty() && disabled & (1 << (slot.get_slot_index() + 8)) != 0)
+                || (old.is_empty() && disabled & (1 << (slot.get_slot_index() + 16)) != 0)
+            {
+                return false;
+            }
+            let new_stack = if creative && old.is_empty() && !held.is_empty() {
+                held.copy_with_count(1)
+            } else if !held.is_empty() && held.item_count > 1 {
+                if !old.is_empty() {
+                    return false;
+                }
+                held.split(1)
+            } else {
+                std::mem::replace(held, old)
+            };
+            equipment.put(&slot, new_stack.clone());
+            new_stack
+        };
+        self.living_entity
+            .send_equipment_changes(&[(slot, changed)]);
+        true
+    }
+
     fn break_and_drop_items(&self) {
         let entity = self.get_entity();
         //let name = entity.custom_name.unwrap_or(entity.get_name());
@@ -214,10 +337,11 @@ impl ArmorStandEntity {
             .load()
             .drop_stack(&entity.block_pos.load(), armor_stand_item);
 
-        Self::on_break(entity);
+        self.on_break();
     }
 
-    fn on_break(entity: &Entity) {
+    fn on_break(&self) {
+        let entity = self.get_entity();
         let world = entity.world.load();
         world.play_sound(
             Sound::EntityArmorStandBreak,
@@ -225,7 +349,19 @@ impl ArmorStandEntity {
             &entity.pos.load(),
         );
 
-        // TODO: Implement equipment slots and make them drop all of their stored items.
+        let equipment = {
+            let mut guard = self
+                .living_entity
+                .entity_equipment
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::mem::take(&mut guard.equipment)
+        };
+        for stack in equipment.into_values() {
+            if !crate::entity::living::prevents_equipment_drop(&stack) {
+                world.drop_stack(&entity.block_pos.load().up(), stack);
+            }
+        }
     }
 
     /// Spawns break particles at the armor stand's position.
@@ -247,6 +383,15 @@ impl ArmorStandEntity {
 }
 
 impl EntityBase for ArmorStandEntity {
+    fn interact_at_with_hand(
+        &self,
+        player: &Arc<Player>,
+        item_stack: &mut ItemStack,
+        _hand: Hand,
+        position: Vector3<f64>,
+    ) -> Option<bool> {
+        Some(self.interact_at(player, item_stack, position))
+    }
     fn can_hit(&self) -> bool {
         !self.get_entity().is_removed() && !self.is_marker()
     }
@@ -370,7 +515,7 @@ impl EntityBase for ArmorStandEntity {
         }
 
         if damage_type.has_tag(&tag::DamageType::MINECRAFT_IS_EXPLOSION) {
-            Self::on_break(entity);
+            self.on_break();
             entity.remove();
             return false;
         }
