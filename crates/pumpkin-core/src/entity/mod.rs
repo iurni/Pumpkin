@@ -5672,22 +5672,21 @@ impl Entity {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        {
-            // Dismount takes these locks in the same order.
-            let mut rider_vehicle = passenger_entity
-                .vehicle
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if !can_attach(
-                rider_vehicle
-                    .as_ref()
-                    .is_some_and(|rider| rider.strong_count() > 0),
-                &passengers,
-            ) {
-                return false;
-            }
-            *rider_vehicle = Some(Arc::downgrade(vehicle));
+        // Dismount takes these locks in the same order.
+        let mut rider_vehicle = passenger_entity
+            .vehicle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !can_attach(
+            rider_vehicle
+                .as_ref()
+                .is_some_and(|rider| rider.strong_count() > 0),
+            &passengers,
+        ) {
+            return false;
         }
+        *rider_vehicle = Some(Arc::downgrade(vehicle));
+        drop(rider_vehicle);
 
         if let Some(player) = passenger.get_player() {
             let other_passenger_type = passengers
