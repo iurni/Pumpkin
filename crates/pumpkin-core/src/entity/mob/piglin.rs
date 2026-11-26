@@ -19,6 +19,7 @@ use pumpkin_data::tracked_data;
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_nbt::tag::NbtTag;
 use pumpkin_util::math::position::BlockPos;
+use rand::RngExt;
 
 use crate::entity::ai::target_match::TargetMatch;
 use crate::entity::item::ItemEntity;
@@ -35,8 +36,11 @@ use crate::entity::{
         wander_around::WanderAroundGoal,
     },
     mob::{
-        Mob, MobEntity, crossbow_attack_mob::CrossbowAttackMob, equipment::RegionalDifficulty,
+        Mob, MobEntity,
+        crossbow_attack_mob::CrossbowAttackMob,
+        equipment::RegionalDifficulty,
         piglin_ai::PiglinAi,
+        spawn::{EntitySpawnReason, SpawnGroupData},
     },
 };
 use crate::world::World;
@@ -77,6 +81,9 @@ impl PiglinEntity {
     pub const INVENTORY_SIZE: usize = 8;
     pub const XP_REWARD: u32 = 5;
     pub const AMBIENT_SOUND_INTERVAL: i32 = 80;
+    const PROBABILITY_OF_SPAWNING_AS_BABY: f32 = 0.2;
+    const PROBABILITY_OF_SPAWNING_WITH_CROSSBOW_INSTEAD_OF_SWORD: f32 = 0.5;
+    const CHANCE_OF_WEARING_EACH_ARMOUR_ITEM: f32 = 0.1;
 
     pub fn new(entity: Entity) -> Arc<Self> {
         let mob_entity = MobEntity::new(entity);
@@ -167,6 +174,20 @@ impl PiglinEntity {
         };
 
         mob_arc
+    }
+
+    fn create_spawn_weapon(&self) -> ItemStack {
+        let mut random = self.get_random();
+        let weapon = if random.random::<f32>()
+            < Self::PROBABILITY_OF_SPAWNING_WITH_CROSSBOW_INSTEAD_OF_SWORD
+        {
+            &Item::CROSSBOW
+        } else if random.random_range(0..10) == 0 {
+            &Item::GOLDEN_SPEAR
+        } else {
+            &Item::GOLDEN_SWORD
+        };
+        ItemStack::new(1, weapon)
     }
 
     #[must_use]
@@ -895,6 +916,34 @@ impl Mob for PiglinEntity {
         &self.mob_entity
     }
 
+    fn finalize_spawn(
+        &self,
+        world: &Arc<World>,
+        reason: EntitySpawnReason,
+        group_data: Option<SpawnGroupData>,
+    ) -> Option<SpawnGroupData> {
+        if reason != EntitySpawnReason::Structure {
+            if rand::random::<f32>() < Self::PROBABILITY_OF_SPAWNING_AS_BABY {
+                self.set_baby(true);
+            } else if self.is_adult() {
+                self.mob_entity
+                    .living_entity
+                    .entity_equipment
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .put(&EquipmentSlot::MAIN_HAND, self.create_spawn_weapon());
+            }
+        }
+        let difficulty = RegionalDifficulty::at(world, self.get_entity().pos.load());
+        self.populate_default_equipment_slots(world, &difficulty);
+        self.populate_default_equipment_enchantments(&difficulty);
+        let group_data = self.finalize_spawn_super(group_data);
+        self.mob_entity
+            .living_entity
+            .apply_current_equipment_attribute_modifiers();
+        group_data
+    }
+
     fn populate_default_equipment_slots(
         &self,
         _world: &Arc<World>,
@@ -907,34 +956,25 @@ impl Mob for PiglinEntity {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-            let weapon = if rand::random::<f32>() < 0.5 {
-                &Item::CROSSBOW
-            } else if rand::random_range(0..10) == 0 {
-                &Item::GOLDEN_SPEAR
-            } else {
-                &Item::GOLDEN_SWORD
-            };
-            equipment.put(&EquipmentSlot::MAIN_HAND, ItemStack::new(1, weapon));
-
-            if rand::random::<f32>() < 0.1 {
+            if rand::random::<f32>() < Self::CHANCE_OF_WEARING_EACH_ARMOUR_ITEM {
                 equipment.put(
                     &EquipmentSlot::HEAD,
                     ItemStack::new(1, &Item::GOLDEN_HELMET),
                 );
             }
-            if rand::random::<f32>() < 0.1 {
+            if rand::random::<f32>() < Self::CHANCE_OF_WEARING_EACH_ARMOUR_ITEM {
                 equipment.put(
                     &EquipmentSlot::CHEST,
                     ItemStack::new(1, &Item::GOLDEN_CHESTPLATE),
                 );
             }
-            if rand::random::<f32>() < 0.1 {
+            if rand::random::<f32>() < Self::CHANCE_OF_WEARING_EACH_ARMOUR_ITEM {
                 equipment.put(
                     &EquipmentSlot::LEGS,
                     ItemStack::new(1, &Item::GOLDEN_LEGGINGS),
                 );
             }
-            if rand::random::<f32>() < 0.1 {
+            if rand::random::<f32>() < Self::CHANCE_OF_WEARING_EACH_ARMOUR_ITEM {
                 equipment.put(&EquipmentSlot::FEET, ItemStack::new(1, &Item::GOLDEN_BOOTS));
             }
         }

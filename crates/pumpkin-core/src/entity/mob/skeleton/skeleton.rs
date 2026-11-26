@@ -6,7 +6,12 @@ use std::sync::Arc;
 
 use crate::entity::{
     Entity, EntityBase,
-    mob::{Mob, MobEntity, equipment::RegionalDifficulty, skeleton::SkeletonEntityBase},
+    mob::{
+        Mob, MobEntity,
+        equipment::RegionalDifficulty,
+        skeleton::SkeletonEntityBase,
+        spawn::{EntitySpawnReason, SpawnGroupData},
+    },
 };
 use crate::world::World;
 
@@ -33,6 +38,26 @@ impl Mob for SkeletonEntity {
 
     fn get_mob_entity(&self) -> &MobEntity {
         &self.entity.mob_entity
+    }
+
+    fn finalize_spawn(
+        &self,
+        world: &Arc<World>,
+        _reason: EntitySpawnReason,
+        group_data: Option<SpawnGroupData>,
+    ) -> Option<SpawnGroupData> {
+        let group_data = self.finalize_spawn_super(group_data);
+        let difficulty = RegionalDifficulty::at(world, self.get_entity().pos.load());
+        self.populate_default_equipment_slots(world, &difficulty);
+        self.populate_default_equipment_enchantments(&difficulty);
+        self.get_mob_entity().set_can_pick_up_loot(
+            rand::random::<f32>()
+                < MobEntity::MAX_PICKUP_LOOT_CHANCE * difficulty.special_multiplier,
+        );
+        self.get_mob_entity()
+            .living_entity
+            .apply_current_equipment_attribute_modifiers();
+        group_data
     }
 
     fn populate_default_equipment_slots(

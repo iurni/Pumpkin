@@ -710,6 +710,10 @@ fn equip_mob_from_def(
 /// Mobs not listed in the registry silently receive no equipment.
 pub fn equip_mob_on_spawn(mob: &dyn EntityBase, world: &Arc<crate::world::World>) {
     let entity_type = mob.get_entity().entity_type;
+    // These species equip in finalize_spawn; tracker initialization must preserve NBT equipment.
+    if entity_type == &EntityType::SKELETON || entity_type == &EntityType::PIGLIN {
+        return;
+    }
     let pos = mob.get_entity().pos.load();
     let difficulty = RegionalDifficulty::at(world, pos);
 

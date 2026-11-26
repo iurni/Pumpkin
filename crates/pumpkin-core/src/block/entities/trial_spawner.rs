@@ -1123,6 +1123,17 @@ impl TrialSpawner {
                 .set_synced_data(pumpkin_data::tracked_data::slime::ID_SIZE, i32::from(size));
         }
 
+        // Vanilla finalizes before applying the trial's equipment loot overrides.
+        // TODO: load the spawn data entity NBT into the mob instead of the baby/slime-size special cases.
+        if only_id {
+            crate::entity::mob::spawn::finalize_spawn(
+                &entity,
+                world,
+                crate::entity::mob::spawn::EntitySpawnReason::TrialSpawner,
+                None,
+            );
+        }
+
         if let Some(equip) = equipment_loot_table
             && let Some(loot_table) = world.get_loot_table(&equip)
             && let Some(living) = entity.get_living_entity()
@@ -1163,15 +1174,6 @@ impl TrialSpawner {
             return None;
         }
 
-        // TODO: load the spawn data entity NBT into the mob instead of the baby/slime-size special cases.
-        if only_id {
-            crate::entity::mob::spawn::finalize_spawn(
-                &entity,
-                world,
-                crate::entity::mob::spawn::EntitySpawnReason::TrialSpawner,
-                None,
-            );
-        }
         world.spawn_entity(entity);
 
         let flame_data = i32::from(self.is_ominous);
