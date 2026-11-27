@@ -8,6 +8,9 @@ impl JavaClient {
         player.update_last_action_time();
         match client_status.action_id.0 {
             SClientCommand::PERFORM_RESPAWN => {
+                if player.finish_end_credits() {
+                    return;
+                }
                 // Perform respawn
                 if player.living_entity.health.load() > 0.0 {
                     return;

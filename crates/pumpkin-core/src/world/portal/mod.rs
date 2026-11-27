@@ -1,14 +1,21 @@
 use std::sync::Arc;
 
-use pumpkin_data::Block;
 use pumpkin_data::block_properties::HorizontalAxis;
 use pumpkin_data::dimension::Dimension;
+use pumpkin_data::entity::EntityType;
+use pumpkin_data::fluid::Fluid;
+use pumpkin_data::{Block, BlockDirection};
+use pumpkin_protocol::java::client::play::{CGameEvent, GameEvent};
+use pumpkin_util::GameMode;
+use pumpkin_util::math::boundingbox::{BoundingBox, EntityDimensions};
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector2::Vector2;
 use pumpkin_util::math::vector3::Vector3;
+use pumpkin_world::chunk::ChunkHeightmapType;
 use pumpkin_world::world::BlockFlags;
 
 use super::World;
+use crate::entity::player::Player;
 
 pub mod end;
 pub mod nether;
@@ -129,18 +136,15 @@ impl PortalType {
                             pitch: None,
                         })
                     } else {
-                        // Leaving the End through the exit portal: return to overworld spawn
+                        // Java players return to their personal respawn point when valid.
                         if let Some(player) =
                             current_level.get_player_by_id(caller.get_entity().entity_id)
                         {
                             match player.client.as_ref() {
-                                crate::net::ClientPlatform::Java(client) => {
-                                    if let Ok(data) = client.serialize_packet(&pumpkin_protocol::java::client::play::CGameEvent::new(
-                                        pumpkin_protocol::java::client::play::GameEvent::WinGame,
-                                        1.0,
-                                    )) {
-                                        client.try_enqueue_packet(data);
-                                    }
+                                crate::net::ClientPlatform::Java(_) => {
+                                    return Some(
+                                        Self::get_end_exit_destination(dest_world, &player).await,
+                                    );
                                 }
                                 crate::net::ClientPlatform::Bedrock(client) => {
                                     if let Ok(data) = client.serialize_packet(
@@ -154,7 +158,7 @@ impl PortalType {
                                         client.try_enqueue_packet(data);
                                     }
                                 }
-                                crate::net::ClientPlatform::SimulatedPlayer(_) => {},
+                                crate::net::ClientPlatform::SimulatedPlayer(_) => {}
                             }
                         }
 
@@ -259,6 +263,132 @@ impl PortalType {
             }
         }
     }
+
+    pub(crate) async fn get_end_exit_destination(
+        default_world: Arc<World>,
+        player: &Player,
+    ) -> TeleportTransition {
+        if let Some(respawn) = player.calculate_respawn_point(false).await {
+            let player_world = player.world();
+            let new_world = if player_world.dimension == respawn.dimension {
+                player_world
+            } else {
+                default_world.server.upgrade().map_or_else(
+                    || Arc::clone(&default_world),
+                    |server| server.get_world_from_dimension(&respawn.dimension),
+                )
+            };
+            return TeleportTransition {
+                new_world,
+                position: respawn.position,
+                yaw: Some(respawn.yaw),
+                pitch: Some(respawn.pitch),
+            };
+        }
+
+        if player
+            .respawn_point
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+        {
+            player
+                .send_client_packet(&CGameEvent::new(GameEvent::NoRespawnBlockAvailable, 0.0))
+                .await;
+        }
+
+        let (spawn, yaw, pitch) = default_world.get_spawn_location();
+        let position = find_shared_spawn(&default_world, spawn).await.to_f64();
+        TeleportTransition {
+            new_world: default_world,
+            position,
+            yaw: Some(yaw),
+            pitch: Some(pitch),
+        }
+    }
+}
+
+async fn find_shared_spawn(world: &World, spawn: BlockPos) -> BlockPos {
+    let max_y = world.dimension.min_y + world.dimension.height;
+    let player_type = &EntityType::PLAYER;
+    let dimensions = EntityDimensions::new(
+        player_type.dimension[0],
+        player_type.dimension[1],
+        player_type.eye_height,
+    );
+    let fits_player = |pos: &BlockPos| {
+        let p = pos.to_f64();
+        let bounds = BoundingBox::new_from_pos(p.x, p.y, p.z, &dimensions);
+        world.is_space_empty(bounds)
+            && !world.contains_any_liquid(bounds)
+            && world.no_entity_collision(None, bounds)
+    };
+
+    if world
+        .server
+        .upgrade()
+        .is_some_and(|server| server.basic_config.default_gamemode != GameMode::Adventure)
+    {
+        let border_distance = world
+            .worldborder
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_distance_to_border(f64::from(spawn.0.x), f64::from(spawn.0.z))
+            .floor() as i64;
+        let radius = if border_distance <= 1 {
+            1
+        } else {
+            world
+                .level_info
+                .load()
+                .game_rules
+                .respawn_radius
+                .clamp(0, border_distance)
+        };
+        let width = 2 * radius + 1;
+        let count = width.saturating_mul(width).min(1024);
+        let step = if count <= 16 { count - 1 } else { 17 };
+        let offset = rand::random_range(0..count);
+        for index in 0..count {
+            let column = (offset + step * index) % count;
+            let x = spawn.0.x + (column % width - radius) as i32;
+            let z = spawn.0.z + (column / width - radius) as i32;
+            world
+                .level
+                .get_or_fetch_chunk(Vector2::new(x >> 4, z >> 4), |_| ())
+                .await;
+            let surface = world.get_heightmap_height(ChunkHeightmapType::MotionBlocking, x, z);
+            for y in (world.dimension.min_y..=(surface + 1).min(max_y)).rev() {
+                let floor = BlockPos::new(x, y, z);
+                if world.get_fluid_and_fluid_state(&floor).0.id != Fluid::EMPTY.id {
+                    break;
+                }
+                if world
+                    .get_block_state(&floor)
+                    .is_side_solid(BlockDirection::Up)
+                {
+                    let stand_pos = floor.up();
+                    if fits_player(&stand_pos) {
+                        return stand_pos;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    world
+        .level
+        .get_or_fetch_chunk(Vector2::new(spawn.0.x >> 4, spawn.0.z >> 4), |_| ())
+        .await;
+    let mut stand_pos = spawn;
+    while stand_pos.0.y < max_y && !fits_player(&stand_pos) {
+        stand_pos = stand_pos.up();
+    }
+    while stand_pos.0.y > world.dimension.min_y && fits_player(&stand_pos.down()) {
+        stand_pos = stand_pos.down();
+    }
+    stand_pos
 }
 
 pub struct TeleportTransition {

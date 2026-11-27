@@ -35,6 +35,7 @@ pub fn pickup_area(player: &Player) -> BoundingBox {
 pub(super) fn touch_entities(world: &World, player: &Arc<Player>) {
     if player.living_entity.health.load() <= 0.0
         || player.is_spectator()
+        || player.has_pending_end_credits()
         || player.world().uuid != world.uuid
     {
         return;

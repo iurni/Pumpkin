@@ -3796,6 +3796,21 @@ impl Entity {
                         let Some(entity_arc) = world_clone.get_entity_by_id(entity_id) else {
                             return;
                         };
+                        let is_end_exit = portal_type == PortalType::End
+                            && world_clone.dimension == Dimension::THE_END;
+                        let end_exit_player = entity_arc
+                            .get_player()
+                            .filter(|player| is_end_exit && player.client.java().is_some());
+                        let exit_interrupted = |player: &Player| {
+                            player.client.closed()
+                                || !player.living_entity.is_alive()
+                                || !Arc::ptr_eq(&player.world(), &world_clone)
+                        };
+                        if end_exit_player.is_some_and(|player| {
+                            exit_interrupted(player) || player.begin_end_credits()
+                        }) {
+                            return;
+                        }
                         let transition = portal_type
                             .get_portal_destination(
                                 &world_clone,
@@ -3804,6 +3819,11 @@ impl Entity {
                                 src_portal.as_ref(),
                             )
                             .await;
+
+                        // A respawn chunk load can outlast a disconnect or another teleport.
+                        if end_exit_player.is_some_and(exit_interrupted) {
+                            return;
+                        }
 
                         if let Some(transition) = transition {
                             let dest_world = transition.new_world.clone();

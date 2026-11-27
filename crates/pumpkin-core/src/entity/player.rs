@@ -1,6 +1,7 @@
 pub mod advancement;
 pub mod client_move;
 pub mod client_push;
+mod end_credits;
 mod shoulders;
 pub mod simulated_player;
 pub mod statistics;
@@ -25,6 +26,7 @@ use arc_swap::ArcSwap;
 use crossbeam::atomic::AtomicCell;
 use crossbeam::channel::Receiver;
 use crossbeam::queue::SegQueue;
+use end_credits::EndCreditsState;
 use pumpkin_data::dimension::Dimension;
 use pumpkin_inventory::Inventory;
 use pumpkin_inventory::player::ender_chest_inventory::EnderChestInventory;
@@ -740,6 +742,7 @@ pub struct Player {
     pub fishing_bobber: AtomicI32,
     pub bedrock_skin: arc_swap::ArcSwap<pumpkin_protocol::bedrock::client::Skin>,
     pub seen_credits: AtomicBool,
+    end_credits: AtomicCell<EndCreditsState>,
     pub warden_spawn_tracker: std::sync::Mutex<WardenSpawnTracker>,
     pub score: AtomicI32,
     pub spawn_extra_particles_on_fall: AtomicBool,
@@ -1083,6 +1086,7 @@ impl Player {
             fishing_bobber: AtomicI32::new(-1),
             bedrock_skin: ArcSwap::new(Arc::new(bedrock_skin)),
             seen_credits: AtomicBool::new(false),
+            end_credits: AtomicCell::new(EndCreditsState::Inactive),
             warden_spawn_tracker: std::sync::Mutex::new(WardenSpawnTracker::default()),
             score: AtomicI32::new(0),
             spawn_extra_particles_on_fall: AtomicBool::new(false),
@@ -2329,13 +2333,17 @@ impl Player {
     ///   (both the block and block above allow mob spawn).
     /// - For beds: validates the bed block still exists and finds a valid spawn position around it.
     /// - For respawn anchors (Nether): validates the anchor has charges and finds a valid spawn position.
+    ///   Only a death respawn consumes a charge.
     /// - Returns `None` if the spawn block is invalid/missing (caller should send
     ///   `NoRespawnBlockAvailable` game event and use world spawn).
     ///
     /// # Note
     /// This function does NOT send any packets. The caller is responsible for
     /// sending `NoRespawnBlockAvailable` if this returns `None`.
-    pub async fn calculate_respawn_point(&self) -> Option<CalculatedRespawnPoint> {
+    pub async fn calculate_respawn_point(
+        &self,
+        consume_anchor_charge: bool,
+    ) -> Option<CalculatedRespawnPoint> {
         type BedProperties = pumpkin_data::block_properties::WhiteBedLikeProperties;
         type AnchorProperties = pumpkin_data::block_properties::RespawnAnchorLikeProperties;
 
@@ -2346,12 +2354,16 @@ impl Player {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             respawn_guard.clone()?
         };
-        let world = if self.world().dimension == respawn_point.dimension {
-            self.world()
-        } else if let Some(server) = self.world().server.upgrade() {
-            server.get_world_from_dimension(&respawn_point.dimension)
+        let current_world = self.world();
+        let world = if current_world.dimension == respawn_point.dimension {
+            current_world
         } else {
-            self.world()
+            let server = current_world.server.upgrade()?;
+            let world = server.get_world_from_dimension(&respawn_point.dimension);
+            if world.dimension != respawn_point.dimension {
+                return None;
+            }
+            world
         };
         let pos = &respawn_point.position;
 
@@ -2402,7 +2414,12 @@ impl Player {
         }
 
         // Handle bed respawn
-        if block.has_tag(&tag::Block::MINECRAFT_BEDS) {
+        if block.has_tag(&tag::Block::MINECRAFT_BEDS)
+            && world
+                .dimension
+                .bed_rule
+                .can_set_spawn(world.is_dark_outside())
+        {
             let bed_props = BedProperties::from_state_id(state_id);
             let facing = bed_props.facing;
 
@@ -2420,8 +2437,8 @@ impl Player {
         }
 
         // Handle respawn anchor (Nether)
-        if block == &Block::RESPAWN_ANCHOR {
-            let anchor_props = AnchorProperties::from_state_id(state_id);
+        if block == &Block::RESPAWN_ANCHOR && world.dimension.respawn_anchor_works {
+            let mut anchor_props = AnchorProperties::from_state_id(state_id);
             let charges = anchor_props.charges;
 
             // Anchor needs at least 1 charge to work
@@ -2431,15 +2448,14 @@ impl Player {
 
             // Try positions around the anchor
             if let Some(spawn_pos) = Self::find_anchor_spawn_position(&world, pos) {
-                // Decrement charges after successful respawn position found
-                let new_charges = charges - 1;
-                let mut new_props = anchor_props;
-                new_props.charges = new_charges;
-                world.set_block_state(
-                    pos,
-                    new_props.to_state_id(block),
-                    pumpkin_world::world::BlockFlags::NOTIFY_ALL,
-                );
+                if consume_anchor_charge {
+                    anchor_props.charges -= 1;
+                    world.set_block_state(
+                        pos,
+                        anchor_props.to_state_id(block),
+                        pumpkin_world::world::BlockFlags::NOTIFY_ALL,
+                    );
+                }
 
                 return Some(CalculatedRespawnPoint {
                     position: spawn_pos,
@@ -3320,6 +3336,9 @@ impl Player {
     /// Inbound packets go first, for all players, so every tick sees this tick's moves.
     #[expect(clippy::too_many_lines)]
     pub fn tick<'a>(&'a self, server: &'a Server) {
+        if self.has_pending_end_credits() {
+            return;
+        }
         if let ClientPlatform::Bedrock(client) = self.client.as_ref() {
             client.tick_network_latency(self);
         }
@@ -3976,6 +3995,9 @@ impl Player {
 
     #[must_use]
     pub fn has_client_loaded(&self) -> bool {
+        if self.has_pending_end_credits() {
+            return false;
+        }
         if !self.supports_player_loaded() {
             return true;
         }
@@ -8219,7 +8241,7 @@ impl NBTStorageInit for EnderChestInventory {}
 
 impl EntityBase for Player {
     fn can_hit(&self) -> bool {
-        !self.is_spectator() && !self.get_entity().is_removed()
+        !self.is_spectator() && !self.get_entity().is_removed() && !self.has_pending_end_credits()
     }
 
     fn sound_source(&self) -> SoundCategory {
@@ -8446,7 +8468,9 @@ impl EntityBase for Player {
 
     fn is_pushable(&self) -> bool {
         // Creative players get pushed too.
-        !self.is_spectator() && self.living_entity.can_be_pushed(self.on_climbable())
+        !self.is_spectator()
+            && !self.has_pending_end_credits()
+            && self.living_entity.can_be_pushed(self.on_climbable())
     }
 
     fn get_name(&self) -> TextComponent {

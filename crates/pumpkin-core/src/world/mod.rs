@@ -4526,7 +4526,7 @@ impl World {
 
         // Get respawn position and dimension
         let (position, yaw, pitch, respawn_dimension) = if let Some(respawn) =
-            player.calculate_respawn_point().await
+            player.calculate_respawn_point(true).await
         {
             (
                 respawn.position,

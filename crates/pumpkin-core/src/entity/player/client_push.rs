@@ -67,7 +67,10 @@ impl Player {
     /// Vanilla `LivingEntity.pushEntities` for a player, run after all player ticks.
     pub fn push_entities(&self) {
         let living = &self.living_entity;
-        if !living.dead.load(Ordering::Relaxed) && living.health.load() > 0.0 {
+        if !self.has_pending_end_credits()
+            && !living.dead.load(Ordering::Relaxed)
+            && living.health.load() > 0.0
+        {
             living.push_entities(self);
         }
     }
