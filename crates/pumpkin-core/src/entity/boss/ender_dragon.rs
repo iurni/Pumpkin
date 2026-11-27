@@ -1081,7 +1081,7 @@ impl EnderDragonEntity {
             ExperienceOrbEntity::spawn(&world, pos, experience * 8 / 100);
         }
 
-        let movement = Vector3::new(0.0, f64::from(0.1_f32), 0.0);
+        let movement = Vector3::new(0.0, f64::from(0.1f32), 0.0);
         entity.move_entity(self, movement);
         for part in &self.parts {
             part.entity.update_last_pos();
