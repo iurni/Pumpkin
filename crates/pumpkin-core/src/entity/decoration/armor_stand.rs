@@ -280,13 +280,13 @@ impl ArmorStandEntity {
 
         // Do not invoke plugin callbacks while holding the stand's inventory lock.
         if let Some(server) = self.get_entity().world.load().server.upgrade() {
-            let mut event = crate::plugin::api::events::player::player_armor_stand_manipulate::PlayerArmorStandManipulateEvent {
+            let event = crate::plugin::api::events::player::player_armor_stand_manipulate::PlayerArmorStandManipulateEvent {
                 player: player.clone(),
                 armor_stand_id: self.get_entity().entity_id,
                 slot: slot.get_slot_index() as u8,
                 cancelled: false,
             };
-            server.plugin_manager.fire_blocking(&server, &mut event);
+            let event = server.plugin_manager.fire_blocking(&server, event);
             if event.cancelled {
                 return true;
             }

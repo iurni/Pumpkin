@@ -87,12 +87,12 @@ impl JavaClient {
         held: &mut ItemStack,
         server: &Arc<Server>,
     ) {
-        let mut event =
+        let event =
             crate::plugin::api::events::player::player_item_consume::PlayerItemConsumeEvent::new(
                 player.clone(),
                 held.item.registry_key.to_string(),
             );
-        server.plugin_manager.fire_blocking(server, &mut event);
+        let event = server.plugin_manager.fire_blocking(server, event);
         if !event.cancelled {
             Self::prepare_hand_item_for_use(player, hand, held);
         }

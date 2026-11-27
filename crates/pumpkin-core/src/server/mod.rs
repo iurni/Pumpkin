@@ -960,6 +960,7 @@ impl Server {
         else {
             return Err("Simulated player login was cancelled".to_string());
         };
+        world.start_simulated_player_tracking(&player, self).await;
         world.announce_player_join(&player, self).await;
         Ok(Arc::new(SimulatedPlayer::new(player, Arc::downgrade(self))))
     }

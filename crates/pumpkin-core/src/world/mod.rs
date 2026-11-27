@@ -5322,15 +5322,25 @@ impl World {
             new_list
         });
         // Entity tracking starts in the spawn path, after the tab list reached viewers.
-        if matches!(player.client.as_ref(), ClientPlatform::SimulatedPlayer(_)) {
-            Self::with_player_list_entry(player, |java, bedrock| {
-                self.broadcast_packet_except_editioned(&[player.gameprofile.id], java, bedrock);
-            });
-            self.entity_tracker
-                .add_entity(&(player.clone() as Arc<dyn EntityBase>), self);
-            self.broadcast_simulated_player_tab_list_visibility(player);
-        }
         Ok(())
+    }
+
+    pub(crate) async fn start_simulated_player_tracking(
+        &self,
+        player: &Arc<Player>,
+        server: &Server,
+    ) {
+        {
+            let _membership = server.tab_list_membership.lock().await;
+            server.add_tab_list_player(player);
+            Self::with_java_tab_list_entry(player, |packet| {
+                server.broadcast_java_tab_list(packet);
+            });
+        }
+        self.broadcast_bedrock_tab_list_entry(player);
+        self.entity_tracker
+            .add_entity(&(player.clone() as Arc<dyn EntityBase>), self);
+        self.broadcast_simulated_player_tab_list_visibility(player);
     }
 
     /// Tab-list add entry for `player` from its stored state.
