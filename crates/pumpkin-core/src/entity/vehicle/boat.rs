@@ -239,9 +239,6 @@ impl BoatEntity {
                         source_entity: Some(other.as_ref()),
                     },
                 );
-                if other.get_mob().is_some() && passenger.is_leashed() {
-                    passenger.drop_leash();
-                }
             }
         }
     }
