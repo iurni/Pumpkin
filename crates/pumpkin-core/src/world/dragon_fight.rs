@@ -13,7 +13,7 @@ use pumpkin_util::{
     math::{position::BlockPos, vector2::Vector2, vector3::Vector3},
     text::TextComponent,
 };
-use pumpkin_world::world::BlockFlags;
+use pumpkin_world::{chunk::ChunkHeightmapType, world::BlockFlags};
 
 use super::{
     World,
@@ -487,7 +487,7 @@ impl DragonFight {
     }
 
     pub fn set_dragon_killed(&mut self, world: &Arc<World>, killed_uuid: Uuid) {
-        if self.dragon_uuid.is_some() && Some(killed_uuid) != self.dragon_uuid {
+        if self.dragon_killed || self.dragon_uuid != Some(killed_uuid) {
             return;
         }
 
@@ -502,12 +502,17 @@ impl DragonFight {
 
         // Place the dragon egg on the first kill.
         if !self.previously_killed {
-            let podium_pos = self.exit_portal_location.unwrap_or(self.origin);
-            let egg_pos = BlockPos::new(podium_pos.0.x, podium_pos.0.y + 4, podium_pos.0.z);
+            let podium_pos = super::end_podium::get_location(self.origin);
+            let y = world.get_heightmap_height(
+                ChunkHeightmapType::MotionBlocking,
+                podium_pos.0.x,
+                podium_pos.0.z,
+            ) + 1;
+            let egg_pos = BlockPos::new(podium_pos.0.x, y, podium_pos.0.z);
             world.set_block_state(
                 &egg_pos,
                 Block::DRAGON_EGG.default_state.id,
-                BlockFlags::NOTIFY_LISTENERS,
+                BlockFlags::NOTIFY_ALL,
             );
         }
 

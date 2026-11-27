@@ -1,8 +1,11 @@
 use pumpkin_data::damage::DamageType;
-use pumpkin_data::entity::EntityType;
+use pumpkin_data::entity::{EntityPose, EntityStatus, EntityType};
+use pumpkin_data::particle::Particle;
 use pumpkin_data::tag::{self, Taggable};
+use pumpkin_data::world::WorldEvent;
 use pumpkin_data::{Block, BlockStateId};
 use pumpkin_nbt::compound::NbtCompound;
+use pumpkin_protocol::bedrock::server::actor_event::ActorEventID;
 use pumpkin_protocol::codec::var_int::VarInt;
 use pumpkin_util::GameMode;
 use pumpkin_util::math::boundingbox::EntityDimensions;
@@ -14,6 +17,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use crate::entity::{
     Entity, EntityBase,
+    experience_orb::ExperienceOrbEntity,
     living::LivingEntity,
     mob::{Mob, MobEntity},
     player::Player,
@@ -28,7 +32,9 @@ use phase::{EnderDragonPhase, PhaseManager};
 pub const NODE_COUNT: usize = 24;
 pub const NODE_Y: i32 = 105;
 pub const NODE_REACH_SQ: f64 = 64.0;
-pub const DEATH_TIMER_MAX: i32 = 200;
+const DEATH_TIMER_MAX: i32 = 200;
+const FIRST_DRAGON_XP: u32 = 12000;
+const DRAGON_XP: u32 = 500;
 const GROWL_COOLDOWN_BASE: i32 = 200;
 const FLAP_SPEED: f32 = 0.2;
 pub const FLY_ACCEL: f64 = 0.1;
@@ -745,18 +751,16 @@ impl EnderDragonEntity {
         );
 
         let actual_vel = entity.velocity.load();
-        if self.current_phase() != EnderDragonPhase::Dying {
-            let inside_wall = *self
-                .in_wall
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let movement = if inside_wall {
-                actual_vel * 0.8
-            } else {
-                actual_vel
-            };
-            entity.move_entity(self, movement);
-        }
+        let inside_wall = *self
+            .in_wall
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let movement = if inside_wall {
+            actual_vel * 0.8
+        } else {
+            actual_vel
+        };
+        entity.move_entity(self, movement);
         let actual_dir = if actual_vel.length_squared() > 1e-6 {
             actual_vel.normalize()
         } else {
@@ -1002,11 +1006,115 @@ impl EnderDragonEntity {
         }
     }
 
+    fn update_fight(&self) {
+        let living = &self.mob_entity.living_entity;
+        let entity = &living.entity;
+        let world = entity.world.load();
+        if let Some(fight) = &world.dragon_fight
+            && let Ok(mut fight) = fight.lock()
+        {
+            let custom_name = entity.custom_name.load();
+            fight.update_dragon(
+                &world,
+                entity.entity_uuid,
+                living.health.load(),
+                living.get_max_health(),
+                custom_name.as_ref().as_ref(),
+            );
+        }
+    }
+
+    fn tick_dragon_death(&self) {
+        self.update_fight();
+        let time = {
+            let mut time = self
+                .dragon_death_time
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *time += 1;
+            *time
+        };
+        let entity = &self.mob_entity.living_entity.entity;
+        let world = entity.world.load();
+        let pos = entity.pos.load();
+
+        if entity.pose.load() != EntityPose::Dying {
+            entity.set_pose(EntityPose::Dying);
+            world.send_entity_status(entity, EntityStatus::Death, ActorEventID::Death);
+        }
+        if time == 1 && !entity.is_silent() {
+            world.sync_global_world_event(WorldEvent::SoundDragonDeath, entity.block_pos.load(), 0);
+        }
+        if (180..=DEATH_TIMER_MAX).contains(&time) {
+            let offset = Vector3::new(
+                rand::random_range(-4.0..4.0),
+                2.0 + rand::random_range(-2.0..2.0),
+                rand::random_range(-4.0..4.0),
+            );
+            world.spawn_particle(
+                pos + offset,
+                Vector3::default(),
+                0.0,
+                1,
+                Particle::ExplosionEmitter,
+            );
+        }
+
+        let drop_experience = world.level_info.load().game_rules.mob_drops
+            && (151..=DEATH_TIMER_MAX).contains(&time)
+            && time % 5 == 0;
+        let experience = drop_experience.then(|| {
+            let first_fight_victory = world.dragon_fight.as_ref().is_some_and(|fight| {
+                let fight = fight
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                fight.dragon_uuid() == Some(entity.entity_uuid)
+                    && !fight.has_previously_killed_dragon()
+            });
+            if first_fight_victory {
+                FIRST_DRAGON_XP
+            } else {
+                DRAGON_XP
+            }
+        });
+        if let Some(experience) = experience {
+            ExperienceOrbEntity::spawn(&world, pos, experience * 8 / 100);
+        }
+
+        let movement = Vector3::new(0.0, f64::from(0.1_f32), 0.0);
+        entity.move_entity(self, movement);
+        for part in &self.parts {
+            part.entity.update_last_pos();
+            part.entity.set_pos(part.entity.pos.load() + movement);
+        }
+
+        if time >= DEATH_TIMER_MAX {
+            if let Some(experience) = experience {
+                ExperienceOrbEntity::spawn(&world, entity.pos.load(), experience / 5);
+            }
+            if let Some(fight) = &world.dragon_fight {
+                let mut fight = fight
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if fight.dragon_uuid() == Some(entity.entity_uuid) {
+                    fight.set_dragon_killed(&world, entity.entity_uuid);
+                }
+            }
+            entity.remove();
+        }
+    }
+
     pub fn ai_step(&self) {
-        if self.mob_entity.living_entity.entity.is_removed() {
+        let living = &self.mob_entity.living_entity;
+        let entity = &living.entity;
+        if entity.is_removed() {
             return;
         }
-        self.mob_entity.living_entity.entity.update_last_pos();
+        entity.update_last_pos();
+        if living.health.load() <= 0.0 {
+            self.tick_dragon_death();
+            return;
+        }
         if self.mob_entity.is_no_ai() {
             self.tick_parts();
             return;
@@ -1026,22 +1134,7 @@ impl EnderDragonEntity {
         self.tick_growl();
         self.tick_crystal_healing();
 
-        {
-            let world = self.mob_entity.living_entity.entity.world.load();
-            if let Some(ref fight_mutex) = world.dragon_fight {
-                let living = &self.mob_entity.living_entity;
-                if let Ok(mut fight) = fight_mutex.lock() {
-                    let custom_name = living.entity.custom_name.load();
-                    fight.update_dragon(
-                        &world,
-                        living.entity.entity_uuid,
-                        living.health.load(),
-                        living.get_max_health(),
-                        custom_name.as_ref().as_ref(),
-                    );
-                }
-            }
-        }
+        self.update_fight();
 
         let mut phase_type = self.current_phase();
         let mut phase = self.phase_manager.get_phase(phase_type);
@@ -1059,24 +1152,22 @@ impl EnderDragonEntity {
             phase.tick(self);
         }
 
-        if self.mob_entity.living_entity.entity.is_removed() {
+        if entity.is_removed() {
             return;
         }
 
-        if !matches!(phase_type, EnderDragonPhase::Dying) && !self.current_phase().is_sitting() {
+        if living.health.load() > 0.0 && !self.current_phase().is_sitting() {
             let target_location = *self
                 .target_location
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(target) = target_location {
-                let entity = &self.mob_entity.living_entity.entity;
                 let velocity = entity.velocity.load();
                 let turn_speed = phase.get_turn_speed(velocity.x.hypot(velocity.z) as f32);
                 self.steer_toward(entity.pos.load(), target, phase.get_fly_speed(), turn_speed);
             }
         }
 
-        let entity = &self.mob_entity.living_entity.entity;
         entity.body_yaw.store(entity.yaw.load());
         self.tick_parts();
     }
@@ -1112,7 +1203,7 @@ impl Mob for EnderDragonEntity {
 
     fn travel(&self, _caller: &dyn EntityBase) -> bool {
         // Dragon flight applies its movement before drag; generic mob travel would move it twice.
-        self.current_phase() != EnderDragonPhase::Dying
+        true
     }
 
     fn has_global_tick_reach(&self) -> bool {
@@ -1126,6 +1217,13 @@ impl Mob for EnderDragonEntity {
 
     fn mob_write_nbt(&self, nbt: &mut NbtCompound) {
         nbt.put_int("DragonPhase", self.current_phase().network_id());
+        nbt.put_int(
+            "DragonDeathTime",
+            *self
+                .dragon_death_time
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
         nbt.put_float(
             "sitting_damage_received",
             *self
@@ -1140,17 +1238,29 @@ impl Mob for EnderDragonEntity {
             self.set_phase(EnderDragonPhase::from_network_id(phase));
         }
         *self
+            .dragon_death_time
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = nbt
+            .get_int("DragonDeathTime")
+            .unwrap_or(0)
+            .clamp(0, DEATH_TIMER_MAX);
+        *self
             .sitting_damage_received
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             nbt.get_float("sitting_damage_received").unwrap_or(0.0);
     }
 
-    fn on_damage(&self, _damage_type: DamageType, _source: Option<&dyn EntityBase>) {
-        let living = &self.mob_entity.living_entity;
-        if living.health.load() <= 0.0 {
+    fn on_die(&self, _source: Option<&dyn EntityBase>) {
+        if !self.current_phase().is_sitting() {
+            self.mob_entity.living_entity.set_health(1.0);
             self.set_phase(EnderDragonPhase::Dying);
         }
+    }
+
+    fn remove_when_far_away(&self, _distance_sq: f64) -> bool {
+        let living = &self.mob_entity.living_entity;
+        !living.is_dead_or_dying() && self.current_phase() != EnderDragonPhase::Dying
     }
 
     fn get_mob_gravity(&self) -> f64 {

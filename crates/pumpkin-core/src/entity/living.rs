@@ -2870,14 +2870,21 @@ impl LivingEntity {
             // Like vanilla, stats go to the kill credit, loot and XP to the killing blow.
             let kill_credit = self.get_kill_credit();
             let killer = cause.or(source);
+            // An airborne dragon's death flight leaves it at one health until it reaches the podium.
+            let returning_dragon =
+                self.entity.entity_type == &EntityType::ENDER_DRAGON && self.health.load() > 0.0;
 
             self.update_death_stats(&*dyn_self, kill_credit.as_deref());
 
-            self.make_voice_sound(&*dyn_self, self.death_sound(&*dyn_self));
+            if self.entity.entity_type != &EntityType::ENDER_DRAGON {
+                self.make_voice_sound(&*dyn_self, self.death_sound(&*dyn_self));
+            }
             let perished = killer
                 .and_then(EntityBase::get_mob)
                 .is_none_or(|mob| mob.killed_entity(&*dyn_self));
-            world.send_entity_status(&self.entity, EntityStatus::Death, ActorEventID::Death);
+            if !returning_dragon {
+                world.send_entity_status(&self.entity, EntityStatus::Death, ActorEventID::Death);
+            }
             let looting_level;
             let tool = if let Some(cause_ent) = cause {
                 if let Some(player) = cause_ent
@@ -2947,7 +2954,9 @@ impl LivingEntity {
                     ExperienceOrbEntity::spawn(&world, self.entity.pos.load(), amount);
                 }
             }
-            self.entity.pose.store(EntityPose::Dying);
+            if !returning_dragon {
+                self.entity.pose.store(EntityPose::Dying);
+            }
 
             if should_drop_loot && dyn_self.get_player().is_none() {
                 self.drop_equipment(looting_level);
@@ -4590,7 +4599,9 @@ impl EntityBase for LivingEntity {
         // from continuing to be simulated (accumulating fall_distance/velocity).
         // We allow movement during death animation (20 ticks) so knockback is applied.
         let is_alive = !self.dead.load(Relaxed) && self.health.load() > 0.0;
-        let in_death_animation = self.health.load() <= 0.0 && self.death_time.load(Relaxed) < 20;
+        let in_death_animation = self.entity.entity_type != &EntityType::ENDER_DRAGON
+            && self.health.load() <= 0.0
+            && self.death_time.load(Relaxed) < 20;
         if is_alive || in_death_animation {
             let _ = self.current_impulse_context_reset_grace_time.fetch_update(
                 Relaxed,
@@ -4910,6 +4921,10 @@ impl EntityBase for LivingEntity {
         self.refresh_dirty_attributes(caller);
 
         if self.health.load() <= 0.0 {
+            // The dragon completes its own 200-tick death sequence.
+            if self.entity.entity_type == &EntityType::ENDER_DRAGON {
+                return;
+            }
             let time = self
                 .death_time
                 .fetch_update(Relaxed, Relaxed, |time| Some(time.saturating_add(1)))

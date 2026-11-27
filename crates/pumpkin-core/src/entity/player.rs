@@ -9967,6 +9967,48 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dragon_finishes_its_own_death_sequence() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::entity::{
+            Entity, EntityBase,
+            boss::ender_dragon::{EnderDragonEntity, phase::EnderDragonPhase},
+        };
+        use pumpkin_data::{damage::DamageType, entity::EntityType};
+
+        let directory = tempfile::tempdir()?;
+        let (server, player, _peer) = java_test_player(&directory, "DragonDeathTest").await?;
+        let world = player.world();
+        let dragon = EnderDragonEntity::new(Entity::new(
+            world.clone(),
+            Vector3::new(8.0, 80.0, 8.0),
+            &EntityType::ENDER_DRAGON,
+        ));
+        world.add_entity_silent(dragon.clone());
+        dragon.set_phase(EnderDragonPhase::SitScanning);
+        let entity = dragon.get_entity();
+        assert!(dragon.damage_with_context(
+            dragon.as_ref(),
+            400.0,
+            DamageType::PLAYER_ATTACK,
+            None,
+            Some(player.as_ref()),
+            Some(player.as_ref()),
+        ));
+
+        for _ in 0..199 {
+            dragon.tick(dragon.as_ref(), &server);
+            assert!(!entity.is_removed());
+        }
+        dragon.tick(dragon.as_ref(), &server);
+        assert!(entity.is_removed());
+
+        let client = player.client.java().ok_or("No Java client")?;
+        client.close();
+        client.await_tasks().await;
+        world.level.shutdown().await;
+        Ok(())
+    }
+
     #[test]
     fn anti_spam_counter_decay_and_threshold() {
         use std::sync::atomic::{AtomicU32, Ordering};
