@@ -4962,7 +4962,11 @@ impl Player {
     }
 
     pub async fn unload_watched_chunks(&self, world: &World) {
-        let radial_chunks = self.watched_section.load().all_chunks_within();
+        let radial_chunks: Vec<_> = self.watched_section.load().all_chunks_within().collect();
+        // Snapshot live containers while our tickets still keep their chunks loaded.
+        for &chunk_pos in &radial_chunks {
+            world.save_block_entities(chunk_pos);
+        }
         let level = &world.level;
         let chunks_to_clean = level.mark_chunks_as_not_watched(radial_chunks);
         if !chunks_to_clean.is_empty() {
@@ -5064,6 +5068,8 @@ impl Player {
                         );
                         if let Ok(data) = java.serialize_packet(&packet) {
                             java.send_packet_now(data).await;
+                            // The respawn packet recreates the client player and resets its XP display.
+                            self.last_sent_xp.store(-1, Ordering::Relaxed);
                         }
                     }
                     ClientPlatform::Bedrock(bedrock) => {
