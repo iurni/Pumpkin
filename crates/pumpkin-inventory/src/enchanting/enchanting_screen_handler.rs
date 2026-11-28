@@ -1,9 +1,10 @@
 use std::any::Any;
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use crate::inventory::Inventory;
 use pumpkin_data::Enchantment;
-use pumpkin_data::data_component_impl::EnchantableImpl;
+use pumpkin_data::data_component_impl::{EnchantableImpl, StoredEnchantmentsImpl};
 use pumpkin_data::item::Item;
 use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::screen::WindowType;
@@ -19,19 +20,19 @@ use crate::{
     window_property::{EnchantmentTable, WindowProperty},
 };
 
-struct LapisSlot(NormalSlot);
+struct EnchantingSlot(NormalSlot);
 
 fn is_lapis(stack: &ItemStack) -> bool {
     stack.item == &Item::LAPIS_LAZULI
 }
 
-impl LapisSlot {
-    fn new(inventory: Arc<dyn Inventory>) -> Self {
-        Self(NormalSlot::new(inventory, 1))
+impl EnchantingSlot {
+    fn new(inventory: Arc<dyn Inventory>, index: usize) -> Self {
+        Self(NormalSlot::new(inventory, index))
     }
 }
 
-impl Slot for LapisSlot {
+impl Slot for EnchantingSlot {
     fn get_inventory(&self) -> Arc<dyn Inventory> {
         self.0.get_inventory()
     }
@@ -45,7 +46,15 @@ impl Slot for LapisSlot {
     }
 
     fn can_insert(&self, stack: &ItemStack) -> bool {
-        is_lapis(stack)
+        self.get_index() == 0 || is_lapis(stack)
+    }
+
+    fn get_max_item_count(&self) -> u8 {
+        if self.get_index() == 0 {
+            1
+        } else {
+            self.0.get_max_item_count()
+        }
     }
 
     fn mark_dirty(&self) {
@@ -82,8 +91,8 @@ impl EnchantingTableScreenHandler {
         };
 
         // Enchanting slots: 0 is item, 1 is lapis
-        handler.add_slot(Arc::new(NormalSlot::new(inventory.clone(), 0)));
-        handler.add_slot(Arc::new(LapisSlot::new(inventory.clone())));
+        handler.add_slot(Arc::new(EnchantingSlot::new(inventory.clone(), 0)));
+        handler.add_slot(Arc::new(EnchantingSlot::new(inventory.clone(), 1)));
 
         let player_inventory: Arc<dyn Inventory> = player_inventory.clone();
         handler.add_player_slots(&player_inventory);
@@ -94,7 +103,7 @@ impl EnchantingTableScreenHandler {
     pub fn update_enchantments(&mut self, player: &dyn InventoryPlayer) {
         let item = self.inventory.get_stack(0);
 
-        if item.is_empty() || item.has_enchantments() {
+        if item.is_empty() || item.item_count != 1 || item.has_enchantments() {
             for i in 0..3 {
                 self.level_requirements[i] = 0;
                 self.enchantment_id[i] = -1;
@@ -115,7 +124,8 @@ impl EnchantingTableScreenHandler {
                 let mut random = LegacyRand::from_seed(self.enchantment_seed as u64);
 
                 for i in 0..3 {
-                    let level = self.calculate_level_requirement(&mut random, i);
+                    let level =
+                        Self::calculate_level_requirement(&mut random, i, self.bookshelf_count);
                     self.level_requirements[i] = level;
                 }
 
@@ -161,16 +171,19 @@ impl EnchantingTableScreenHandler {
         self.send_property_updates();
     }
 
-    fn calculate_level_requirement(&self, random: &mut LegacyRand, slot: usize) -> i32 {
-        let b = self.bookshelf_count;
+    fn calculate_level_requirement(random: &mut LegacyRand, slot: usize, b: i32) -> i32 {
         let level = random.next_bounded_i32(8) + 1 + (b >> 1) + random.next_bounded_i32(b + 1);
 
-        match slot {
+        let requirement = match slot {
             0 => (level / 3).max(1),
-            1 => (level * 2 / 3 + 7).max(1),
+            1 => level * 2 / 3 + 1,
             2 => level.max(b * 2).max(1),
             _ => 0,
+        };
+        if requirement < slot as i32 + 1 {
+            return 0;
         }
+        requirement
     }
 
     const fn create_enchantment_random(&self, slot: usize) -> LegacyRand {
@@ -193,10 +206,11 @@ impl EnchantingTableScreenHandler {
         enchant_level = (enchant_level as f32 * (1.0 + bonus)).round() as i32;
         enchant_level = enchant_level.max(1);
 
+        let is_book = item.item == &Item::BOOK;
         let mut available = Vec::new();
         for enchant in Enchantment::all() {
             if enchant.has_tag(&EnchantmentTag::MINECRAFT_IN_ENCHANTING_TABLE)
-                && enchant.can_enchant(item.item)
+                && (is_book || enchant.can_enchant(item.item))
             {
                 for l in (1..=enchant.max_level).rev() {
                     if enchant_level >= enchant.min_cost.calculate(l)
@@ -259,6 +273,11 @@ impl EnchantingTableScreenHandler {
                 }
                 current_level /= 2;
             }
+        }
+
+        if is_book && result.len() > 1 {
+            let removed = random.next_bounded_i32(result.len() as i32) as usize;
+            result.remove(removed);
         }
 
         result
@@ -334,7 +353,7 @@ impl ScreenHandler for EnchantingTableScreenHandler {
         }
 
         let level_req = self.level_requirements[id as usize];
-        if player.experience_level() < level_req && !player.is_creative() {
+        if level_req <= 0 || (player.experience_level() < level_req && !player.is_creative()) {
             return false;
         }
 
@@ -352,7 +371,7 @@ impl ScreenHandler for EnchantingTableScreenHandler {
         // Perform enchantment
         let mut item_stack = self.inventory.get_stack(0);
 
-        if item_stack.is_empty() || item_stack.has_enchantments() {
+        if item_stack.is_empty() || item_stack.item_count != 1 || item_stack.has_enchantments() {
             return false;
         }
 
@@ -375,8 +394,15 @@ impl ScreenHandler for EnchantingTableScreenHandler {
             self.inventory.set_stack(1, lapis_stack);
         }
 
-        for (enchant, level) in enchantments {
-            item_stack.add_enchantment(enchant, level as u16);
+        if item_stack.item == &Item::BOOK {
+            item_stack = item_stack.transmute_copy(&Item::ENCHANTED_BOOK, 1);
+            item_stack.set_data_component(StoredEnchantmentsImpl {
+                enchantment: Cow::Owned(enchantments),
+            });
+        } else {
+            for (enchant, level) in enchantments {
+                item_stack.add_enchantment(enchant, level as u16);
+            }
         }
         self.inventory.set_stack(0, item_stack);
 
@@ -467,5 +493,29 @@ mod tests {
     fn lapis_slot_only_accepts_lapis_lazuli() {
         assert!(is_lapis(&ItemStack::new(1, &Item::LAPIS_LAZULI)));
         assert!(!is_lapis(&ItemStack::new(1, &Item::DIRT)));
+    }
+
+    #[test]
+    fn level_requirements_match_java_26_3() {
+        for (seed, bookshelves, expected) in [(123456789, 15, [8, 11, 30]), (3, 0, [2, 0, 0])] {
+            let mut random = LegacyRand::from_seed(seed);
+            let actual = std::array::from_fn(|slot| {
+                EnchantingTableScreenHandler::calculate_level_requirement(
+                    &mut random,
+                    slot,
+                    bookshelves,
+                )
+            });
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn ordinary_book_can_receive_table_enchantments() {
+        let book = ItemStack::new(1, &Item::BOOK);
+        let mut random = LegacyRand::from_seed(123456789);
+        let enchantments =
+            EnchantingTableScreenHandler::get_enchantment_list(&mut random, &book, 8);
+        assert!(!enchantments.is_empty());
     }
 }
